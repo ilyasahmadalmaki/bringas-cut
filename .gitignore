@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.pyo
+dist/
+build/
+*.spec
+*.exe
+*.mp4
+*.mov
+*.mkv
+*.avi
+*.webm
+output/
+out/
+ffmpeg.exe
+ffprobe.exe
