@@ -16,11 +16,7 @@ Tiap klip dikasih **1 efek random yang beda dari klip lain**. Nama file output
 
 > **Catatan jujur:** efek acak bikin tiap klip makin beda dari video aslinya,
 > jadi lebih susah dikenali fingerprint otomatis. Tapi **TIDAK ADA jaminan
-> 100% lolos** Content ID atau review reused-content YouTube — apalagi buat
-> monetisasi, reviewer manusia bisa tetap menolak konten yang cuma potongan
-> orang lain tanpa nilai tambah. Tool ini paling aman dipakai buat footage
-> sendiri / stock / berizin, atau sebagai B-roll yang nanti ditambah narasi
-> original.
+> 100% lolos** Content ID atau review reused-content YouTube.
 
 ## Setup 1 Klik (untuk yang awam)
 
