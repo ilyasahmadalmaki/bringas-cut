@@ -154,6 +154,85 @@ def test_effect_filter():
         check("filter: efek tidak dikenal -> ValueError", True)
 
 
+def test_roll_extra_effects():
+    # All off -> nothing
+    e = fu.roll_extra_effects(random.Random(0), False, False, False)
+    check("extras roll: semua OFF -> flip False, speed/rotate None",
+          e == {"flip": False, "speed": None, "rotate_deg": None}, str(e))
+    # Flip ~50% in a big sample (seed 42 gives exactly 50/100)
+    r = random.Random(42)
+    flips = sum(1 for _ in range(100)
+                if fu.roll_extra_effects(r, True, False, False)["flip"])
+    check("extras roll: flip kira-kira 50% (35-65 dari 100)",
+          35 <= flips <= 65, f"flips={flips}")
+    # Speed range + 2 decimals, None when off
+    r = random.Random(3)
+    speeds = [fu.roll_extra_effects(r, False, True, False)["speed"]
+              for _ in range(100)]
+    check("extras roll: speed dalam [0.92, 1.08]",
+          all(0.92 <= s <= 1.08 for s in speeds), str(speeds[:5]))
+    check("extras roll: speed dibulatkan 2 desimal",
+          all(round(s, 2) == s for s in speeds), str(speeds[:5]))
+    check("extras roll: speed bervariasi (random)",
+          len(set(speeds)) > 10, str(speeds[:8]))
+    check("extras roll: speed OFF -> None",
+          fu.roll_extra_effects(random.Random(0), False, False, False)["speed"] is None)
+    # Rotate magnitude + sign, None when off
+    r = random.Random(5)
+    rots = [fu.roll_extra_effects(r, False, False, True)["rotate_deg"]
+            for _ in range(100)]
+    check("extras roll: |rotate| dalam [0.5, 2.0]",
+          all(0.5 <= abs(d) <= 2.0 for d in rots), str(rots[:5]))
+    check("extras roll: rotate dibulatkan 1 desimal",
+          all(round(d, 1) == d for d in rots), str(rots[:5]))
+    check("extras roll: rotate ada + dan - (arah acak)",
+          any(d > 0 for d in rots) and any(d < 0 for d in rots), str(rots[:10]))
+    check("extras roll: rotate OFF -> None",
+          fu.roll_extra_effects(random.Random(0), False, False, False)["rotate_deg"] is None)
+    # Keys
+    e = fu.roll_extra_effects(random.Random(0))
+    check("extras roll: keys = flip/speed/rotate_deg",
+          set(e.keys()) == {"flip", "speed", "rotate_deg"}, str(e))
+    # format helper
+    check("extras format: flip + speed + rotate",
+          fu.format_extra_effects({"flip": True, "speed": 1.05, "rotate_deg": -1.2})
+          == "flip + speed 1.05x + rotate -1.2°")
+    check("extras format: semua off -> ''",
+          fu.format_extra_effects({"flip": False, "speed": None, "rotate_deg": None}) == "")
+    check("extras format: None -> ''", fu.format_extra_effects(None) == "")
+
+
+def test_build_extra_filter():
+    none_ex = {"flip": False, "speed": None, "rotate_deg": None}
+    check("extra filter: tidak ada yang aktif -> ''",
+          fu.build_extra_filter(640, 360, none_ex) == "")
+    check("extra filter: extras None -> ''",
+          fu.build_extra_filter(640, 360, None) == "")
+    f = fu.build_extra_filter(640, 360, {"flip": True, "speed": None, "rotate_deg": None})
+    check("extra filter: flip saja -> hflip, tanpa setpts/rotate",
+          f == "hflip", f)
+    f = fu.build_extra_filter(640, 360, {"flip": False, "speed": 1.05, "rotate_deg": None})
+    check("extra filter: speed saja -> setpts saja, tanpa hflip/rotate/fps",
+          f == "setpts=PTS/1.05", f)
+    # NO fps filter after setpts: verified 2026-11-09, fps filter after
+    # zoompan+setpts duplicates frames ~512x (3.7s clip -> 56,888 frames).
+    # setpts alone is correct; the muxer's CFR vsync keeps fps constant.
+    check("extra filter: speed TIDAK pakai fps filter (bug 512x)",
+          "fps=" not in fu.build_extra_filter(
+              640, 360, {"flip": False, "speed": 1.08, "rotate_deg": None}, fps=25.0))
+    f = fu.build_extra_filter(640, 360, {"flip": False, "speed": None, "rotate_deg": 1.5})
+    check("extra filter: rotate saja -> scale + rotate + crop, tanpa hflip/setpts",
+          "rotate=" in f and "crop=640:360" in f and "scale=" in f
+          and "hflip" not in f and "setpts" not in f, f)
+    # Rotate overscale: 640*1.08 = 691.2 -> 692 (even); 360*1.08 = 388.8 -> 388
+    check("extra filter: rotate overscale 1.08x dibulatkan genap",
+          f.startswith("scale=692x388,"), f)
+    # Order: rotate -> hflip -> setpts
+    f = fu.build_extra_filter(640, 360, {"flip": True, "speed": 0.95, "rotate_deg": -1.2})
+    check("extra filter: semua aktif -> urutan rotate, hflip, setpts",
+          f.index("rotate=") < f.index("hflip") < f.index("setpts="), f)
+
+
 def test_gpu_detection():
     fake_all = (
         "Encoders:\n"
@@ -289,6 +368,104 @@ def test_integration_ffmpeg(tmp):
           ok and os.path.isfile(out_cpu))
 
 
+def _extract_frame(video, at, out_png):
+    r = subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-ss", f"{at:.2f}", "-i", video,
+         "-frames:v", "1", out_png], capture_output=True, text=True)
+    return r.returncode == 0 and os.path.isfile(out_png)
+
+
+def test_integration_extra_effects(tmp):
+    if not shutil_which("ffmpeg") or not shutil_which("ffprobe"):
+        print("SKIP  integration extras: ffmpeg/ffprobe tidak tersedia di VM ini")
+        return
+    print("integration extras: buat video tes 10s 640x360 + audio…")
+    src = os.path.join(tmp, "src_x.mp4")
+    r = subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=size=640x360:rate=30:d=10",
+         "-f", "lavfi", "-i", "sine=frequency=440:d=10",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+         "-shortest", src], capture_output=True, text=True)
+    check("integration extras: buat video sumber 10s",
+          r.returncode == 0 and os.path.isfile(src))
+    if r.returncode != 0:
+        return
+    info = fu.probe_specs(src)
+    fps = info.fps if info.fps > 0 else 30.0
+    out_dir = os.path.join(tmp, "out_x")
+    os.makedirs(out_dir, exist_ok=True)
+    log = lambda m: None
+    # (label, start, planned_dur, effect, extras, expected_dur)
+    cases = [
+        ("flip", 0.0, 3.0, "zoom_in",
+         {"flip": True, "speed": None, "rotate_deg": None}, 3.0),
+        ("speed 1.08x", 3.0, 4.0, "pan_left",
+         {"flip": False, "speed": 1.08, "rotate_deg": None}, 4.0 / 1.08),
+        ("speed 0.92x", 0.0, 3.0, "zoom_out",
+         {"flip": False, "speed": 0.92, "rotate_deg": None}, 3.0 / 0.92),
+        ("rotate 2.0", 3.0, 3.0, "shake_soft",
+         {"flip": False, "speed": None, "rotate_deg": 2.0}, 3.0),
+        ("kombinasi", 6.0, 3.0, "zoom_breathe",
+         {"flip": True, "speed": 0.95, "rotate_deg": -1.0}, 3.0 / 0.95),
+    ]
+    for label, start, dur, eff, ex, exp_dur in cases:
+        out = fu.unique_random_output_path(out_dir, rng=random.Random(200 + len(label)))
+        ok = fu.render_clip(src, start, dur, out, eff, "Lembut",
+                            info.width, info.height, fps,
+                            encoder=None, log=log, extras=ex)
+        check(f"integration extras: render {label} ok",
+              ok and os.path.isfile(out), out)
+        if not ok:
+            continue
+        got = fu.probe_duration(out)
+        check(f"integration extras: durasi {label} ~{exp_dur:.2f}s (rencana {dur:.1f}s)",
+              abs(got - exp_dur) < 0.6, f"got={got} want={exp_dur}")
+        # Direction check: speed must actually move the duration, not
+        # just land inside the loose +/-0.6 tolerance.
+        if ex.get("speed") is not None and ex["speed"] > 1.0:
+            check(f"integration extras: {label} durasi LEBIH PENDEK dari rencana",
+                  got < dur - 0.1, f"got={got} planned={dur}")
+        elif ex.get("speed") is not None and ex["speed"] < 1.0:
+            check(f"integration extras: {label} durasi LEBIH PANJANG dari rencana",
+                  got > dur + 0.1, f"got={got} planned={dur}")
+        spec = fu.probe_specs(out)
+        check(f"integration extras: resolusi {label} tetap 640x360",
+              spec.width == 640 and spec.height == 360, str(spec))
+        check(f"integration extras: {label} TIDAK punya audio stream",
+              _has_audio_stream(out) is False, out)
+    # extras=None / all-off == v1 behaviour (same duration, no extras)
+    out_v1 = os.path.join(tmp, "v1_plain.mp4")
+    ok = fu.render_clip(src, 0, 3.0, out_v1, "zoom_in", "Lembut",
+                        640, 360, fps, encoder=None, log=log, extras=None)
+    check("integration extras: extras=None render ok (v1)",
+          ok and os.path.isfile(out_v1))
+    if ok:
+        check("integration extras: extras=None durasi == rencana 3.0s",
+              abs(fu.probe_duration(out_v1) - 3.0) < 0.6,
+              f"got={fu.probe_duration(out_v1)}")
+    # Flip really changes pixels: same segment, plain vs flipped frame
+    plain = os.path.join(tmp, "plain.mp4")
+    flipped = os.path.join(tmp, "flipped.mp4")
+    ok1 = fu.render_clip(src, 1.0, 3.0, plain, "zoom_in", "Lembut",
+                         640, 360, fps, encoder=None, log=log,
+                         extras={"flip": False, "speed": None, "rotate_deg": None})
+    ok2 = fu.render_clip(src, 1.0, 3.0, flipped, "zoom_in", "Lembut",
+                         640, 360, fps, encoder=None, log=log,
+                         extras={"flip": True, "speed": None, "rotate_deg": None})
+    if ok1 and ok2:
+        p1 = os.path.join(tmp, "f_plain.png")
+        p2 = os.path.join(tmp, "f_flipped.png")
+        if _extract_frame(plain, 1.5, p1) and _extract_frame(flipped, 1.5, p2):
+            b1 = Path(p1).read_bytes()
+            b2 = Path(p2).read_bytes()
+            check("integration extras: frame flip BEDA dari frame polos (flip beneran jalan)",
+                  b1 != b2, f"plain={len(b1)}B flipped={len(b2)}B")
+        else:
+            check("integration extras: ekstrak frame buat bandingin flip", False)
+    else:
+        check("integration extras: render polos+flip buat bandingin frame", False)
+
+
 def shutil_which(name):
     import shutil
     return shutil.which(name)
@@ -303,10 +480,13 @@ def main():
         test_unique_random_path(tmp)
         test_intensity_presets()
         test_effect_filter()
+        test_roll_extra_effects()
+        test_build_extra_filter()
         test_gpu_detection()
         test_video_encoder_args()
         test_detect_gpu_encoder_live()
         test_integration_ffmpeg(tmp)
+        test_integration_extra_effects(tmp)
     print(f"\n{PASS} passed, {FAIL} failed")
     return 1 if FAIL else 0
 

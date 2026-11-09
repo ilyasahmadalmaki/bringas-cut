@@ -3,6 +3,8 @@ Bringas Cut — bringas_cut.py
 Windows desktop tool (Python 3.10+ Tkinter, stdlib only).
 Cincang 1 video jadi banyak klip, audio dibuang total, tiap klip
 dikasih 1 efek random yang beda dari klip lain, nama file output acak.
+v1.1: 3 efek tambahan opsional per klip — mirror flip (50%), speed
+acak 0.92-1.08x, rotate miring acak 0.5-2 derajat — default ON semua.
 
 Jalankan:  python bringas_cut.py
            (atau double-click run.bat di Windows)
@@ -51,6 +53,10 @@ class App(tk.Tk):
         self.min_dur = tk.StringVar(value="3")
         self.max_dur = tk.StringVar(value="8")
         self.intensity = tk.StringVar(value=fu.DEFAULT_INTENSITY)
+        # v1.1 — extra effects, all ON by default (user's choice).
+        self.flip_var = tk.BooleanVar(value=True)
+        self.speed_var = tk.BooleanVar(value=True)
+        self.rotate_var = tk.BooleanVar(value=True)
         self.out_folder = tk.StringVar(value=str(Path.home() / "Videos" / "BringasCut"))
         self.use_gpu_var = tk.BooleanVar(value=True)
         self._gpu_encoder = None
@@ -58,7 +64,7 @@ class App(tk.Tk):
         self._spec_cache: dict[str, fu.MediaInfo] = {}
         # Preview plan, reused by POTONG when settings did not change.
         self._planned_key = None
-        self._planned = None  # (durations, effects)
+        self._planned = None  # (durations, effects, extras_list)
 
         self._build_ui()
         self.after(100, self._drain_log)
@@ -175,8 +181,20 @@ class App(tk.Tk):
         tk.Label(cf, text="Efek per klip diundi dari 8 efek (zoom in / zoom out / zoom napas / pan kiri / pan kanan / pan atas / guncang lembut / zoom+guncang) — pool diacak, dipakai semua baru boleh ulang, tidak ada 2 klip berurutan yang efeknya sama. Audio asli dibuang total di semua klip.",
                  bg=PANEL, fg=MUTED, wraplength=900, justify="left").pack(anchor="w", pady=(4, 0))
 
+        # ---- Efek tambahan (v1.1) ----
+        ef = ttk.LabelFrame(root, text="3 — Efek tambahan (opsional, di atas efek utama)", padding=8)
+        ef.pack(fill="x", pady=4)
+        ttk.Checkbutton(ef, text="Mirror flip — 50% klip di-flip (acak per klip). Teks jadi kebalik di klip yang ke-flip.",
+                        variable=self.flip_var).pack(anchor="w")
+        ttk.Checkbutton(ef, text="Speed acak 0.92–1.08x — durasi klip berubah ±8% (durasi output = rencana / speed).",
+                        variable=self.speed_var).pack(anchor="w")
+        ttk.Checkbutton(ef, text="Rotate miring acak 0.5–2° — di-crop biar tidak ada sudut hitam.",
+                        variable=self.rotate_var).pack(anchor="w")
+        tk.Label(ef, text="Ketiganya default ON (pilihan lo). Kalau ketiganya dimatikan, hasilnya sama persis dengan v1. Urutan filter per klip: efek utama → rotate → flip → speed → format.",
+                 bg=PANEL, fg=MUTED, wraplength=900, justify="left").pack(anchor="w", pady=(4, 0))
+
         # ---- Preview + Output ----
-        pf = ttk.LabelFrame(root, text="3 — Preview & Output", padding=8)
+        pf = ttk.LabelFrame(root, text="4 — Preview & Output", padding=8)
         pf.pack(fill="x", pady=4)
         ttk.Button(pf, text="Lihat Rencana Potongan (Preview)",
                    command=self._on_preview).pack(anchor="w")
@@ -215,6 +233,7 @@ class App(tk.Tk):
         tk.Label(root, text="◆ HYDRA TEAM BRINGAS — PERMUDAH HIDUPMU ◆",
                  font=("Consolas", 9, "bold"), bg=BG, fg=ACCENT2).pack(anchor="center", pady=(4, 0))
         self._log("Bringas Cut siap. Pilih 1 video, atur Min/Max + intensitas, lalu POTONG.")
+        self._log("v1.1: efek tambahan flip / speed / rotate default ON (seksi 3) — matikan kalau tidak mau.")
         self._log("Catatan jujur: efek acak bikin klip makin beda dari aslinya, tapi TIDAK ADA jaminan 100% lolos Content ID / review reused-content YouTube.")
         self._detect_gpu()
 
@@ -305,15 +324,21 @@ class App(tk.Tk):
         return mn, mx
 
     def _plan(self, total: float, mn: float, mx: float):
-        """Plan (durations, effects); reuse the preview plan when the
-        settings key matches, so Preview and POTONG agree."""
-        key = (self.video_file.get(), mn, mx, self.intensity.get())
+        """Plan (durations, effects, extras_list); reuse the preview plan
+        when the settings key matches, so Preview and POTONG agree."""
+        key = (self.video_file.get(), mn, mx, self.intensity.get(),
+               self.flip_var.get(), self.speed_var.get(), self.rotate_var.get())
         if self._planned_key == key and self._planned is not None:
             return self._planned
         durations = fu.plan_clips(total, mn, mx)
         effects = fu.assign_effects(len(durations))
+        rng = random.Random()
+        extras_list = [fu.roll_extra_effects(rng, self.flip_var.get(),
+                                             self.speed_var.get(),
+                                             self.rotate_var.get())
+                       for _ in durations]
         self._planned_key = key
-        self._planned = (durations, effects)
+        self._planned = (durations, effects, extras_list)
         return self._planned
 
     def _on_preview(self):
@@ -330,20 +355,27 @@ class App(tk.Tk):
         if info.duration <= 0 or info.width <= 0:
             messagebox.showerror("Video", "Durasi/resolusi video tidak terbaca (probe gagal).")
             return
-        durations, effects = self._plan(info.duration, mn, mx)
+        durations, effects, extras_list = self._plan(info.duration, mn, mx)
         # Force a fresh plan on next preview click (preview is a new roll).
         self._planned_key = None
         starts, t = [], 0.0
         for d in durations:
             starts.append(t)
             t += d
+        extra_on = [n for n, v in (("flip", self.flip_var.get()),
+                                   ("speed", self.speed_var.get()),
+                                   ("rotate", self.rotate_var.get())) if v]
         lines = [f"Video {info.duration:.1f}s -> {len(durations)} klip "
-                 f"(Min {mn:g}s / Max {mx:g}s, intensitas: {self.intensity.get()}):"]
-        for i, (s, d, e) in enumerate(zip(starts, durations, effects)):
+                 f"(Min {mn:g}s / Max {mx:g}s, intensitas: {self.intensity.get()}):",
+                 f"Efek tambahan: {', '.join(extra_on) if extra_on else 'mati semua (hasil = v1)'}"
+                 f" — flip 50%/klip, speed 0.92-1.08x, rotate 0.5-2°."]
+        for i, (s, d, e, ex) in enumerate(zip(starts, durations, effects, extras_list)):
             if i >= 15:
                 lines.append(f"  … +{len(durations) - 15} klip lagi")
                 break
-            lines.append(f"  {i+1}. {s:6.1f}s - {s + d:6.1f}s  ({d:.1f}s)  {fu.EFFECT_LABELS[e]}")
+            desc = fu.format_extra_effects(ex)
+            extra_txt = f" + {desc}" if desc else ""
+            lines.append(f"  {i+1}. {s:6.1f}s - {s + d:6.1f}s  ({d:.1f}s)  {fu.EFFECT_LABELS[e]}{extra_txt}")
         self.preview_label.config(text="\n".join(lines))
         self._log(f"Preview: {len(durations)} klip dari {info.duration:.1f}s "
                   f"(Min {mn:g}s / Max {mx:g}s, {self.intensity.get()})")
@@ -393,8 +425,11 @@ class App(tk.Tk):
             log(f"Video: {os.path.basename(video_path)} — {info.duration:.1f}s, "
                 f"{info.width}x{info.height}, {info.fps:.2f} fps")
             log(f"GPU: {encoder or 'CPU libx264'}"
-                f" | Intensitas: {self.intensity.get()}")
-            durations, effects = self._plan(info.duration, mn, mx)
+                f" | Intensitas: {self.intensity.get()}"
+                f" | Efek tambahan: flip={'ON' if self.flip_var.get() else 'OFF'}, "
+                f"speed={'ON' if self.speed_var.get() else 'OFF'}, "
+                f"rotate={'ON' if self.rotate_var.get() else 'OFF'}")
+            durations, effects, extras_list = self._plan(info.duration, mn, mx)
             self._planned_key = None  # next run re-rolls
             fps = info.fps if info.fps > 0 else 30.0
             starts, t = [], 0.0
@@ -403,15 +438,20 @@ class App(tk.Tk):
                 t += d
             rng = random.Random()
             ok_count, fail_count = 0, 0
-            for i, (start, dur, eff) in enumerate(zip(starts, durations, effects), 1):
+            for i, (start, dur, eff, ex) in enumerate(
+                    zip(starts, durations, effects, extras_list), 1):
                 out_path = fu.unique_random_output_path(out_dir, rng=rng)
                 name = os.path.basename(out_path)
-                log(f"[{i}/{len(durations)}] {name}  {dur:.1f}s  "
-                    f"{fu.EFFECT_LABELS[eff]}  (mulai {start:.1f}s)")
+                desc = fu.format_extra_effects(ex)
+                extra_txt = f" + {desc}" if desc else ""
+                exp_dur = dur / ex["speed"] if ex.get("speed") else dur
+                log(f"[{i}/{len(durations)}] {name}  {dur:.1f}s -> {exp_dur:.1f}s  "
+                    f"{fu.EFFECT_LABELS[eff]}{extra_txt}  (mulai {start:.1f}s)")
                 ok = fu.render_clip(video_path, start, dur, out_path, eff,
                                     self.intensity.get(),
                                     info.width, info.height, fps,
-                                    encoder=encoder, log=log, ffmpeg=ff)
+                                    encoder=encoder, log=log, ffmpeg=ff,
+                                    extras=ex)
                 if ok:
                     ok_count += 1
                 else:

@@ -32,6 +32,11 @@ Locked spec (2026-11-08, user discussion):
   exists = success.
 - No black cmd window on Windows: CREATE_NO_WINDOW for all
   ffmpeg/ffprobe subprocesses.
+- v1.1 (2026-11-09): 3 efek tambahan OPSIONAL per klip, di atas efek
+  utama — Mirror flip (50% per klip), Speed acak 0.92-1.08x (durasi
+  output = rencana/speed), Rotate miring acak 0.5-2 derajat (overscale
+  dulu biar tidak ada sudut hitam). Semua default ON, bisa dimatikan
+  satu-satu di GUI. Kalau ketiganya mati, hasil identik dengan v1.
 """
 from __future__ import annotations
 
@@ -410,6 +415,104 @@ def build_effect_filter(width: int, height: int, effect: str,
 
 
 # --------------------------------------------------------------------------
+# Extra effects (v1.1) — optional, per-clip random, on top of the main effect
+# --------------------------------------------------------------------------
+
+# Extra-effect roll ranges (locked, v1.1):
+# - flip: 50% chance per clip when enabled (not every clip — text in a
+#   flipped clip reads backwards, and an all-flipped run is a monotonous
+#   pattern that is easier to fingerprint as a whole).
+# - speed: uniform 0.92-1.08 (2 decimals). Applied with setpts, so the
+#   OUTPUT clip duration = planned duration / speed (changes +/-8%).
+# - rotate: magnitude uniform 0.5-2.0 degrees (1 decimal), sign +/- random.
+#   Applied with an overscale first (see build_extra_filter) so no black
+#   corners appear.
+SPEED_MIN = 0.92
+SPEED_MAX = 1.08
+ROTATE_MIN_DEG = 0.5
+ROTATE_MAX_DEG = 2.0
+ROTATE_OVERSCALE = 1.08
+
+
+def roll_extra_effects(rng: Optional[random.Random] = None,
+                       flip_on: bool = True, speed_on: bool = True,
+                       rotate_on: bool = True) -> dict:
+    """Roll the optional extra effects for ONE clip.
+
+    Returns {"flip": bool, "speed": float|None, "rotate_deg": float|None}.
+    Each roll is independent per clip; flip is a 50% coin toss.
+    All-off -> {"flip": False, "speed": None, "rotate_deg": None}.
+    """
+    r = rng or random
+    flip = bool(flip_on and r.random() < 0.5)
+    speed = round(r.uniform(SPEED_MIN, SPEED_MAX), 2) if speed_on else None
+    rotate_deg = None
+    if rotate_on:
+        sign = r.choice((-1, 1))
+        rotate_deg = round(sign * r.uniform(ROTATE_MIN_DEG, ROTATE_MAX_DEG), 1)
+    return {"flip": flip, "speed": speed, "rotate_deg": rotate_deg}
+
+
+def format_extra_effects(extras: Optional[dict]) -> str:
+    """Human-readable extras, e.g. 'flip + speed 1.05x + rotate -1.2°'."""
+    if not extras:
+        return ""
+    parts = []
+    if extras.get("flip"):
+        parts.append("flip")
+    if extras.get("speed") is not None:
+        parts.append(f"speed {extras['speed']:.2f}x")
+    if extras.get("rotate_deg") is not None:
+        parts.append(f"rotate {extras['rotate_deg']:+.1f}°")
+    return " + ".join(parts)
+
+
+def build_extra_filter(width: int, height: int,
+                       extras: Optional[dict],
+                       fps: float = 30.0) -> str:
+    """ffmpeg -vf segment for the extra effects ("" when none active).
+
+    Chain order (after the main zoompan effect): rotate -> hflip ->
+    setpts. The caller appends this between the main effect and
+    the final format=yuv420p.
+
+    Rotate: overscale ~1.08x first, then rotate, then centre-crop back
+    to WxH. 1.08 hides the corners at <=2 deg for any aspect ratio
+    (worst case needs ~1.067 at 16:9, from 1/(cos - (W/H)*sin)).
+    All dimensions are even (yuv420p).
+    Speed: setpts=PTS/speed ONLY — no fps filter after it. Verified
+    2026-11-09: `setpts` + `fps=30` after zoompan BLOWS UP the clip
+    (~512x frame duplication: a 3.7s clip came out as 56,888 frames /
+    31 minutes, time_base 1/15360 = 30*512 — the fps filter misreads
+    zoompan's timestamps after setpts; `start_time=0` does not fix
+    it). setpts alone is correct: 2.0s at 1.08x -> 56 frames, 1.87s,
+    avg_frame_rate still 30/1, duration = planned/speed. The MP4
+    muxer's default CFR vsync normalises the frame rate, so the
+    output fps stays constant without the fps filter.
+    """
+    if not extras:
+        return ""
+    parts = []
+    w = _even(width)
+    h = _even(height)
+    deg = extras.get("rotate_deg")
+    if deg is not None:
+        sw = _even(w * ROTATE_OVERSCALE)
+        sh = _even(h * ROTATE_OVERSCALE)
+        rad = float(deg) * 3.141592653589793 / 180.0
+        parts.append(
+            f"scale={sw}x{sh},rotate={rad:.6f}:fillcolor=black,"
+            f"crop={w}:{h}:(in_w-out_w)/2:(in_h-out_h)/2"
+        )
+    if extras.get("flip"):
+        parts.append("hflip")
+    speed = extras.get("speed")
+    if speed is not None:
+        parts.append(f"setpts=PTS/{float(speed):.2f}")
+    return ",".join(parts)
+
+
+# --------------------------------------------------------------------------
 # Clip planning (pure logic)
 # --------------------------------------------------------------------------
 
@@ -506,9 +609,18 @@ def render_clip(input_path: str, start: float, duration: float,
                 width: int = 0, height: int = 0, fps: float = 30.0,
                 encoder: Optional[str] = None,
                 log: LogFn = _noop_log,
-                ffmpeg: Optional[str] = None) -> bool:
+                ffmpeg: Optional[str] = None,
+                extras: Optional[dict] = None) -> bool:
     """Render ONE clip: -ss start, -t duration, effect filter,
     audio removed totally (-an), re-encode at high quality.
+
+    `extras` is a dict from roll_extra_effects (v1.1): the extra
+    filters are appended after the main zoompan effect
+    (rotate -> hflip -> setpts -> format). None or all-off means
+    byte-identical behaviour to v1 — the filter chain is untouched.
+    The extras used are logged per clip (and visible in the logged
+    ffmpeg command line). Speed changes the OUTPUT duration to
+    duration/speed.
 
     "Sikat aja": success = ffmpeg exit 0 + output file exists
     and is non-empty. No probe-based verification.
@@ -522,6 +634,14 @@ def render_clip(input_path: str, start: float, duration: float,
     except ValueError as e:
         log(f"  render gagal: {e}")
         return False
+    extras_str = build_extra_filter(width, height, extras or {}, fps)
+    if extras_str:
+        if vf.endswith(",format=yuv420p"):
+            vf = vf[:-len(",format=yuv420p")]
+        vf = vf + "," + extras_str + ",format=yuv420p"
+        desc = format_extra_effects(extras)
+        if desc:
+            log(f"  extras: {desc}")
     v_args = video_encoder_args(encoder)
     cmd = ([ff, "-hide_banner", "-y",
             "-ss", f"{start:.3f}", "-t", f"{duration:.3f}",
