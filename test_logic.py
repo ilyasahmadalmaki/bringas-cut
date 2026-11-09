@@ -233,6 +233,266 @@ def test_build_extra_filter():
           f.index("rotate=") < f.index("hflip") < f.index("setpts="), f)
 
 
+def test_is_youtube_url():
+    good = [
+        "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+        "https://youtube.com/watch?v=jNQXAC9IVRw&t=5s",
+        "http://www.youtube.com/watch?v=abc123XYZ-_",
+        "www.youtube.com/watch?v=abc123XYZ-_",
+        "https://www.youtube.com/shorts/abc123XYZ-_",
+        "https://youtube.com/shorts/abc123XYZ-_?feature=share",
+        "https://youtu.be/jNQXAC9IVRw",
+        "youtu.be/jNQXAC9IVRw?t=10",
+        "https://music.youtube.com/watch?v=abc123XYZ-_",
+        "https://m.youtube.com/watch?v=abc123XYZ-_",
+        "https://www.youtube.com/embed/abc123XYZ-_",
+        "https://www.youtube.com/live/abc123XYZ-_",
+        "https://www.youtube.com/watch?v=abc123XYZ-_&list=PL123456",
+    ]
+    for u in good:
+        check(f"yt url: diterima {u[:45]}", fu.is_youtube_url(u) is True, u)
+    bad = [
+        "", "   ", "bukan url", "https://vimeo.com/123456",
+        "https://www.facebook.com/watch/?v=123",
+        "https://www.tiktok.com/@x/video/123",
+        "https://www.youtube.com/", "https://youtube.com",
+        "https://youtu.be/", "youtu.be/",
+        "https://www.youtube.com/playlist?list=PL123456",
+        "https://www.youtube.com/channel/UC123456",
+        "https://www.google.com/search?q=youtube",
+    ]
+    for u in bad:
+        check(f"yt url: ditolak {u[:45]!r}", fu.is_youtube_url(u) is False, u)
+
+
+def test_youtube_url_problem():
+    check("yt problem: URL ok -> None",
+          fu.youtube_url_problem("https://youtu.be/jNQXAC9IVRw") is None)
+    check("yt problem: kosong -> pesan",
+          fu.youtube_url_problem("") is not None)
+    check("yt problem: domain lain -> pesan",
+          fu.youtube_url_problem("https://vimeo.com/123") is not None)
+    check("yt problem: playlist saja -> pesan playlist",
+          "playlist" in (fu.youtube_url_problem(
+              "https://www.youtube.com/playlist?list=PL123") or "").lower())
+    check("yt problem: watch+list -> None (video itu yang di-download)",
+          fu.youtube_url_problem(
+              "https://www.youtube.com/watch?v=abc123XYZ-_&list=PL123") is None)
+
+
+def test_build_ytdlp_command():
+    cmd = fu.build_ytdlp_command("/usr/bin/yt-dlp",
+                                 "https://youtu.be/jNQXAC9IVRw",
+                                 "/tmp/dl/Judul.%(ext)s")
+    check("ytdlp cmd: executable + url di akhir",
+          cmd[0] == "/usr/bin/yt-dlp" and cmd[-1] == "https://youtu.be/jNQXAC9IVRw",
+          str(cmd))
+    check("ytdlp cmd: --no-playlist (bukan playlist)",
+          "--no-playlist" in cmd, str(cmd))
+    check("ytdlp cmd: --newline (progress bisa di-parse)",
+          "--newline" in cmd, str(cmd))
+    check("ytdlp cmd: --merge-output-format mp4",
+          "--merge-output-format" in cmd and "mp4" in cmd, str(cmd))
+    fmt = cmd[cmd.index("-f") + 1]
+    check("ytdlp cmd: format cap height<=1080",
+          "height<=1080" in fmt, fmt)
+    check("ytdlp cmd: format TIDAK pernah di atas 1080 (tanpa 2160/4320)",
+          "2160" not in fmt and "4320" not in fmt, fmt)
+    check("ytdlp cmd: format minta mp4 dulu",
+          "[ext=mp4]" in fmt, fmt)
+    check("ytdlp cmd: -o template dipakai",
+          cmd[cmd.index("-o") + 1] == "/tmp/dl/Judul.%(ext)s", str(cmd))
+    check("ytdlp cmd: extractor-args android dulu, web fallback",
+          "android,web" in cmd[cmd.index("--extractor-args") + 1], str(cmd))
+
+
+def test_parse_ytdlp_progress():
+    check("progress: 45.2% standar",
+          fu.parse_ytdlp_progress("[download]  45.2% of  12.34MiB at  1.20MiB/s ETA 00:05") == 45.2)
+    check("progress: 2.4% (spasi ganda)",
+          fu.parse_ytdlp_progress("[download]   2.4% of  614.43KiB at  400.48KiB/s ETA 00:01") == 2.4)
+    check("progress: 100% tanpa desimal",
+          fu.parse_ytdlp_progress("[download] 100% of  614.43KiB in 00:00:01 at 400.54KiB/s") == 100.0)
+    check("progress: 100.0% dengan desimal",
+          fu.parse_ytdlp_progress("[download] 100.0% of  614.43KiB at  1.92MiB/s ETA 00:00") == 100.0)
+    check("progress: 0%",
+          fu.parse_ytdlp_progress("[download]   0.0% of  10.00MiB at  1.00MiB/s ETA 00:10") == 0.0)
+    check("progress: Destination -> None",
+          fu.parse_ytdlp_progress("[download] Destination: video.mp4") is None)
+    check("progress: baris ffmpeg -> None",
+          fu.parse_ytdlp_progress("[ffmpeg] Merging formats into \"video.mp4\"") is None)
+    check("progress: baris kosong -> None",
+          fu.parse_ytdlp_progress("") is None)
+    check("progress: info biasa -> None",
+          fu.parse_ytdlp_progress("[youtube] jNQXAC9IVRw: Downloading webpage") is None)
+
+
+def test_find_yt_dlp(tmp):
+    import shutil as _shutil
+    # Explicit path ke file palsu -> dipakai
+    fake = os.path.join(tmp, "yt-dlp.exe")
+    Path(fake).write_bytes(b"fake")
+    check("find ytdlp: explicit yang ada -> dipakai",
+          fu.find_yt_dlp(fake) == fake)
+    # Explicit tidak ada -> jatuh ke pencarian lain (bukan crash, dan
+    # hasilnya sama dengan pencarian tanpa explicit)
+    check("find ytdlp: explicit tidak ada -> sama kayak tanpa explicit",
+          fu.find_yt_dlp(os.path.join(tmp, "tidak_ada.exe")) == fu.find_yt_dlp())
+    # PATH mock: bikin 'yt-dlp' palsu di folder PATH sendiri
+    bindir = os.path.join(tmp, "bin")
+    os.makedirs(bindir, exist_ok=True)
+    fake_bin = os.path.join(bindir, "yt-dlp")
+    Path(fake_bin).write_text("#!/bin/sh\necho fake\n")
+    os.chmod(fake_bin, 0o755)
+    old_path = os.environ.get("PATH", "")
+    try:
+        os.environ["PATH"] = bindir  # tidak ada yt-dlp asli di PATH ini
+        got = fu.find_yt_dlp()
+        check("find ytdlp: ketemu di PATH",
+              got == fake_bin, str(got))
+        # PATH kosong dari yt-dlp -> None (bukan string buta)
+        empty = os.path.join(tmp, "emptybin")
+        os.makedirs(empty, exist_ok=True)
+        os.environ["PATH"] = empty
+        check("find ytdlp: tidak ada di mana-mana -> None",
+              fu.find_yt_dlp() is None, str(fu.find_yt_dlp()))
+    finally:
+        os.environ["PATH"] = old_path
+
+
+def test_sanitize_and_numbered_path(tmp):
+    check("sanitize: karakter ilegal -> _",
+          fu.sanitize_filename('a/b:c*d?e"f<g>h|i') == "a_b_c_d_e_f_g_h_i")
+    check("sanitize: spasi beruntun -> 1 underscore",
+          fu.sanitize_filename("Judul  Video   Tes") == "Judul_Video_Tes")
+    check("sanitize: kosong -> 'video'",
+          fu.sanitize_filename("   ") == "video")
+    check("sanitize: max 120 char",
+          len(fu.sanitize_filename("x" * 200)) == 120)
+    p = os.path.join(tmp, "Judul.mp4")
+    check("numbered: belum ada -> sama",
+          fu.unique_numbered_path(p) == p)
+    Path(p).write_bytes(b"x")
+    check("numbered: sudah ada -> (1)",
+          fu.unique_numbered_path(p) == os.path.join(tmp, "Judul (1).mp4"))
+    Path(os.path.join(tmp, "Judul (1).mp4")).write_bytes(b"x")
+    check("numbered: (1) ada -> (2)",
+          fu.unique_numbered_path(p) == os.path.join(tmp, "Judul (2).mp4"))
+    check("numbered: minta 'Judul (1)' lagi -> (2)",
+          fu.unique_numbered_path(os.path.join(tmp, "Judul (1).mp4"))
+          == os.path.join(tmp, "Judul (2).mp4"))
+
+
+def test_download_target_path(tmp):
+    dl = os.path.join(tmp, "downloads")
+    os.makedirs(dl, exist_ok=True)
+    tmpl, exp = fu.download_target_path(dl, "Me at the zoo")
+    check("target: template pakai %(ext)s",
+          tmpl == os.path.join(dl, "Me_at_the_zoo.%(ext)s"), tmpl)
+    check("target: expected .mp4",
+          exp == os.path.join(dl, "Me_at_the_zoo.mp4"), exp)
+    Path(exp).write_bytes(b"x")
+    tmpl2, exp2 = fu.download_target_path(dl, "Me at the zoo")
+    check("target: tabrakan -> (1), template ikut",
+          exp2 == os.path.join(dl, "Me_at_the_zoo (1).mp4") and
+          tmpl2 == os.path.join(dl, "Me_at_the_zoo (1).%(ext)s"),
+          f"{tmpl2} | {exp2}")
+    tmpl3, exp3 = fu.download_target_path(dl, "Judul: Ada/Tanda? *Terlarang*")
+    check("target: judul kotor di-sanitize",
+          os.path.basename(exp3) == "Judul__Ada_Tanda___Terlarang_.mp4", exp3)
+
+
+_FAKE_YTDLP = '''#!/usr/bin/env python3
+"""yt-dlp PALSU buat tes: meniru --get-title/--get-duration/download."""
+import os, shutil, sys
+
+args = sys.argv[1:]
+if os.environ.get("FAKE_YT_FAIL") == "1":
+    print("ERROR: Video ini private", file=sys.stderr)
+    sys.exit(1)
+if "--get-title" in args:
+    print("Video Tes Palsu")
+    if "--get-duration" in args:
+        print("10")
+    sys.exit(0)
+if "-o" in args:
+    tmpl = args[args.index("-o") + 1]
+    out = tmpl.replace("%(ext)s", "mp4")
+    print("[download]  50.0% of  1.00MiB at  1.00MiB/s ETA 00:00")
+    print("[download] 100.0% of  1.00MiB at  1.00MiB/s ETA 00:00")
+    print("[download] Destination: " + out)
+    src = os.environ.get("FAKE_YT_SRC", "")
+    if src and os.path.isfile(src):
+        shutil.copyfile(src, out)
+    else:
+        open(out, "wb").write(b"fake-mp4")
+    sys.exit(0)
+print("ERROR: argumen tidak dikenal", file=sys.stderr)
+sys.exit(1)
+'''
+
+
+def _make_fake_ytdlp(tmp):
+    fake = os.path.join(tmp, "yt-dlp")
+    Path(fake).write_text(_FAKE_YTDLP)
+    os.chmod(fake, 0o755)
+    return fake
+
+
+def test_get_youtube_info_fake(tmp):
+    fake = _make_fake_ytdlp(tmp)
+    info = fu.get_youtube_info(fake, "https://youtu.be/FAKE1234567")
+    check("yt info palsu: judul + durasi terbaca",
+          info == {"title": "Video Tes Palsu", "duration": 10.0}, str(info))
+    # Mode gagal -> None (bukan exception)
+    os.environ["FAKE_YT_FAIL"] = "1"
+    try:
+        check("yt info palsu: gagal -> None",
+              fu.get_youtube_info(fake, "https://youtu.be/FAKE1234567") is None)
+    finally:
+        del os.environ["FAKE_YT_FAIL"]
+
+
+def test_download_youtube_fake(tmp):
+    fake = _make_fake_ytdlp(tmp)
+    # Sumber "video" beneran buat disalin si fake yt-dlp
+    src = os.path.join(tmp, "src.mp4")
+    r = subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=30:d=2",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", src],
+        capture_output=True, text=True)
+    if r.returncode != 0:
+        print("SKIP  download fake: ffmpeg gagal bikin src")
+        return
+    os.environ["FAKE_YT_SRC"] = src
+    try:
+        dl = os.path.join(tmp, "downloads")
+        os.makedirs(dl, exist_ok=True)
+        tmpl, exp = fu.download_target_path(dl, "Video Tes Palsu")
+        seen = []
+        ok, result = fu.download_youtube_video(
+            fake, "https://youtu.be/FAKE1234567", tmpl, exp,
+            log=lambda m: None, progress_cb=lambda p: seen.append(p))
+        check("download palsu: ok + path sesuai expected",
+              ok and result == exp, f"ok={ok} result={result}")
+        check("download palsu: file ada + isinya = src",
+              os.path.isfile(exp) and Path(exp).read_bytes() == Path(src).read_bytes())
+        check("download palsu: progress callback dipanggil (50% + 100%)",
+              50.0 in seen and 100.0 in seen, str(seen))
+        # Mode gagal -> (False, error tail berisi pesan)
+        os.environ["FAKE_YT_FAIL"] = "1"
+        tmpl2, exp2 = fu.download_target_path(dl, "Video Gagal")
+        ok2, err = fu.download_youtube_video(
+            fake, "https://youtu.be/FAKE1234567", tmpl2, exp2, log=lambda m: None)
+        check("download palsu: gagal -> False + error tail ada isinya",
+              ok2 is False and err and "private" in err, str(err))
+        check("download palsu: gagal -> file TIDAK dibuat",
+              not os.path.exists(exp2))
+    finally:
+        os.environ.pop("FAKE_YT_SRC", None)
+        os.environ.pop("FAKE_YT_FAIL", None)
+
+
 def test_gpu_detection():
     fake_all = (
         "Encoders:\n"
@@ -466,6 +726,108 @@ def test_integration_extra_effects(tmp):
         check("integration extras: render polos+flip buat bandingin frame", False)
 
 
+def test_integration_fake_download_to_cut(tmp):
+    """Alur lengkap download (fake yt-dlp) -> probe -> cincang 1 klip.
+
+    Membuktikan pipeline v1.2 end-to-end tanpa network: file hasil
+    'download' langsung jadi sumber potongan, dan klip hasilnya tetap
+    tanpa audio.
+    """
+    if not shutil_which("ffmpeg") or not shutil_which("ffprobe"):
+        print("SKIP  integration fake-download->cut: ffmpeg tidak tersedia")
+        return
+    print("integration fake-download->cut: buat src 10s, download palsu, cincang…")
+    src = os.path.join(tmp, "src_dl.mp4")
+    r = subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=size=640x360:rate=30:d=10",
+         "-f", "lavfi", "-i", "sine=frequency=440:d=10",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+         "-shortest", src], capture_output=True, text=True)
+    check("integration fake-download->cut: buat src 10s",
+          r.returncode == 0 and os.path.isfile(src))
+    if r.returncode != 0:
+        return
+    fake = _make_fake_ytdlp(tmp)
+    os.environ["FAKE_YT_SRC"] = src
+    try:
+        dl = os.path.join(tmp, "downloads")
+        os.makedirs(dl, exist_ok=True)
+        tmpl, exp = fu.download_target_path(dl, "Video Tes Palsu")
+        ok, result = fu.download_youtube_video(
+            fake, "https://youtu.be/FAKE1234567", tmpl, exp, log=lambda m: None)
+        check("integration fake-download->cut: download palsu ok",
+              ok and result == exp, str(result))
+        if not ok:
+            return
+        info = fu.probe_specs(result)
+        check("integration fake-download->cut: probe hasil download ~10s",
+              abs(info.duration - 10.0) < 0.6, f"dur={info.duration}")
+        check("integration fake-download->cut: hasil download PUNYA audio (sumber)",
+              _has_audio_stream(result) is True)
+        out_dir = os.path.join(tmp, "out_dl")
+        os.makedirs(out_dir, exist_ok=True)
+        out = fu.unique_random_output_path(out_dir, rng=random.Random(5))
+        ok2 = fu.render_clip(result, 1.0, 3.0, out, "zoom_in", "Lembut",
+                             info.width, info.height, 30.0,
+                             encoder=None, log=lambda m: None)
+        check("integration fake-download->cut: 1 klip ke-render dari hasil download",
+              ok2 and os.path.isfile(out))
+        if ok2:
+            check("integration fake-download->cut: klip TIDAK punya audio stream",
+                  _has_audio_stream(out) is False, out)
+            spec = fu.probe_specs(out)
+            check("integration fake-download->cut: resolusi klip tetap 640x360",
+                  spec.width == 640 and spec.height == 360, str(spec))
+    finally:
+        os.environ.pop("FAKE_YT_SRC", None)
+
+
+def test_integration_real_youtube(tmp):
+    """Download YouTube BENERAN (kalau network VM mengizinkan).
+
+    Video: 'Me at the zoo' (19 detik, publik) — kecil, cepat.
+    Kalau yt-dlp tidak ada atau YouTube memblokir IP VM ini (429 /
+    bot-check — yang memang terjadi pada client web dari IP proxy
+    bersama), tes ini SKIP dengan alasan, bukan FAIL: alur download
+    sudah terbukti lewat fake yt-dlp + command yang sama persis.
+    Yang dicek kalau download jalan: file .mp4 ada, tinggi <= 1080
+    (cap format string), dan sumber hasil download punya audio
+    (klip hasil cincang nanti yang harus tidak punya audio).
+    """
+    ytdlp = shutil_which("yt-dlp")
+    if not ytdlp:
+        print("SKIP  integration YouTube: yt-dlp tidak tersedia di VM ini")
+        return
+    print("integration YouTube: cek info 'Me at the zoo' via yt-dlp beneran…")
+    info = fu.get_youtube_info(ytdlp, "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+                               timeout=90)
+    if info is None:
+        print("SKIP  integration YouTube: get info gagal "
+              "(YouTube memblokir IP VM / network tidak mengizinkan)")
+        return
+    check("integration YouTube: judul 'Me at the zoo'",
+          info["title"] == "Me at the zoo", str(info))
+    check("integration YouTube: durasi ~19 detik",
+          info["duration"] is not None and abs(info["duration"] - 19) < 2,
+          str(info))
+    dl = os.path.join(tmp, "yt_real")
+    os.makedirs(dl, exist_ok=True)
+    tmpl, exp = fu.download_target_path(dl, info["title"])
+    ok, result = fu.download_youtube_video(
+        ytdlp, "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+        tmpl, exp, log=lambda m: None)
+    if not ok:
+        print(f"SKIP  integration YouTube download: {result}")
+        return
+    check("integration YouTube: file .mp4 hasil download ada",
+          os.path.isfile(result) and result.endswith(".mp4"), str(result))
+    spec = fu.probe_specs(result)
+    check("integration YouTube: tinggi hasil <= 1080 (cap format string)",
+          0 < spec.height <= 1080, str(spec))
+    check("integration YouTube: hasil download PUNYA audio (sumber)",
+          _has_audio_stream(result) is True)
+
+
 def shutil_which(name):
     import shutil
     return shutil.which(name)
@@ -482,11 +844,22 @@ def main():
         test_effect_filter()
         test_roll_extra_effects()
         test_build_extra_filter()
+        test_is_youtube_url()
+        test_youtube_url_problem()
+        test_build_ytdlp_command()
+        test_parse_ytdlp_progress()
+        test_find_yt_dlp(tmp)
+        test_sanitize_and_numbered_path(tmp)
+        test_download_target_path(tmp)
+        test_get_youtube_info_fake(tmp)
+        test_download_youtube_fake(tmp)
         test_gpu_detection()
         test_video_encoder_args()
         test_detect_gpu_encoder_live()
         test_integration_ffmpeg(tmp)
         test_integration_extra_effects(tmp)
+        test_integration_fake_download_to_cut(tmp)
+        test_integration_real_youtube(tmp)
     print(f"\n{PASS} passed, {FAIL} failed")
     return 1 if FAIL else 0
 

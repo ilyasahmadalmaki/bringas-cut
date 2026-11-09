@@ -37,12 +37,25 @@ Locked spec (2026-11-08, user discussion):
   output = rencana/speed), Rotate miring acak 0.5-2 derajat (overscale
   dulu biar tidak ada sudut hitam). Semua default ON, bisa dimatikan
   satu-satu di GUI. Kalau ketiganya mati, hasil identik dengan v1.
+- v1.2 (2026-11-09): sumber video 2 opsi — File lokal (perilaku lama)
+  atau Download dari YouTube via yt-dlp. Kualitas download: 1080p
+  TERBAIK (format terbaik dengan tinggi <= 1080, fallback ke yang
+  terbaik di bawahnya kalau sumber max 720p; hasil akhir WAJIB .mp4,
+  tidak pernah di atas 1080p, tidak pernah .webm/.mkv). yt-dlp dicari
+  di sebelah aplikasi dulu, lalu di PATH; kalau tidak ketemu, GUI
+  menyuruh jalankan setup-1-klik.bat lagi (yt-dlp TIDAK di-download
+  diam-diam saat render — hanya lewat setup). Tanpa cookies/login:
+  video yang butuh login / age-restricted / private akan gagal dengan
+  pesan error yang jelas. Satu video saja, BUKAN playlist.
+  Peringatan ToS ada di GUI + README: download hanya untuk video
+  milik sendiri / yang kamu punya hak pakainya.
 """
 from __future__ import annotations
 
 import json
 import os
 import random
+import re
 import shutil
 import string
 import subprocess
@@ -50,6 +63,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, List, Optional, Sequence, Tuple
+from urllib.parse import urlparse, parse_qs
 
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v", ".ts"}
 
@@ -294,6 +308,307 @@ def video_encoder_args(encoder: Optional[str] = None) -> List[str]:
                 "-pix_fmt", "yuv420p"]
     return ["-c:v", "libx264", "-crf", "18", "-preset", "veryfast",
             "-pix_fmt", "yuv420p"]
+
+
+# --------------------------------------------------------------------------
+# YouTube download via yt-dlp (v1.2)
+# --------------------------------------------------------------------------
+
+# Quality: BEST 1080p. The format string picks the best video with
+# height <= 1080 (a 4K source gives its 1080p stream, never 4K; a
+# 720p-max source gives 720p — the best that exists at/below 1080p)
+# + best audio, merged to .mp4. Never above 1080p, never .webm/.mkv.
+YTDLP_FORMAT = (
+    "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/"
+    "bv*[height<=1080]+ba/"
+    "b[height<=1080][ext=mp4]/b[height<=1080]"
+)
+# Player clients, in order: android first — it still works on IPs that
+# get bot-checked/429 on the web client (verified 2026-11-09 from this
+# VM: web client 429s on every request, android returns metadata and
+# downloads fine); web as fallback for full format lists on normal
+# residential IPs. NOTE: on a bot-checked IP the android client may be
+# SABR-limited and only offer lower heights (e.g. 360p for an old
+# video) — the <=1080 cap still holds, it is just the best AVAILABLE
+# on that network. On a normal PC the web client should offer 1080p.
+YTDLP_EXTRACTOR_ARGS = "youtube:player_client=android,web"
+
+_YT_HOSTS = {
+    "youtube.com", "www.youtube.com", "m.youtube.com",
+    "music.youtube.com", "www.music.youtube.com",
+    "youtube-nocookie.com", "www.youtube-nocookie.com",
+    "youtu.be", "www.youtu.be",
+}
+_YT_VIDEO_PATHS = ("/watch", "/shorts/", "/embed/", "/live/", "/v/")
+
+
+def is_youtube_url(url: str) -> bool:
+    """True for a single YouTube video URL.
+
+    Accepts youtube.com/watch, /shorts/, /embed/, /live/, /v/,
+    music.youtube.com, and youtu.be/<id> — with or without scheme.
+    Rejects other domains, bare youtube.com, youtu.be with no id,
+    and /playlist URLs (v1.2 is one video, not a playlist).
+    """
+    if not url or not str(url).strip():
+        return False
+    u = str(url).strip()
+    if "://" not in u:
+        u = "https://" + u
+    try:
+        p = urlparse(u)
+    except Exception:
+        return False
+    host = (p.netloc or "").lower().split(":")[0]
+    if host not in _YT_HOSTS:
+        return False
+    path = p.path or ""
+    if host in ("youtu.be", "www.youtu.be"):
+        return len(path.strip("/")) > 0
+    if path == "/watch":
+        return bool(parse_qs(p.query).get("v"))
+    if path == "/playlist":
+        return False
+    return any(path.startswith(prefix) for prefix in _YT_VIDEO_PATHS)
+
+
+def youtube_url_problem(url: str) -> Optional[str]:
+    """Human-readable reason the URL cannot be used, or None if OK.
+
+    Playlist-only URLs (list= without v=) are rejected here too:
+    v1.2 downloads ONE video, not a playlist.
+    """
+    if not url or not str(url).strip():
+        return "Tempel URL video YouTube dulu."
+    u = str(url).strip()
+    if "://" not in u:
+        u = "https://" + u
+    # Playlist-only ditolak dengan pesan khusus dulu (sebelum cek domain/
+    # bentuk umum) supaya user tahu persis salahnya di mana.
+    try:
+        p = urlparse(u)
+        q = parse_qs(p.query)
+    except Exception:
+        p, q = None, {}
+    if (p is not None and p.path == "/playlist") or ("list" in q and "v" not in q):
+        return ("URL playlist tidak didukung di v1.2 — tempel URL 1 video "
+                "(youtube.com/watch?v=...) saja.")
+    if not is_youtube_url(url):
+        return ("URL bukan video YouTube yang didukung — pakai link "
+                "youtube.com/watch, youtube.com/shorts/, atau youtu.be/.")
+    return None
+
+
+def find_yt_dlp(explicit: Optional[str] = None) -> Optional[str]:
+    """Return yt-dlp executable path, or None when not found.
+
+    Order: explicit path (if it exists) -> yt-dlp.exe / yt-dlp next to
+    this script (where setup-1-klik.bat puts it) -> PATH.
+    Returning None (instead of a blind "yt-dlp" fallback) lets the GUI
+    show a clear "jalankan setup-1-klik.bat lagi" error.
+    """
+    if explicit and os.path.isfile(explicit):
+        return explicit
+    here = Path(__file__).resolve().parent
+    for name in ("yt-dlp.exe", "yt-dlp"):
+        cand = str(here / name)
+        if os.path.isfile(cand):
+            return cand
+    for name in ("yt-dlp.exe", "yt-dlp"):
+        p = shutil.which(name)
+        if p:
+            return p
+    return None
+
+
+def build_ytdlp_command(yt_dlp: str, url: str,
+                        output_template: str) -> List[str]:
+    """yt-dlp command for one video at best-1080p, output to .mp4.
+
+    `output_template` must contain %(ext)s (e.g. ".../Judul.%(ext)s").
+    --no-playlist: a playlist URL with v= downloads just that video.
+    --newline: one progress line per update, parseable by
+    parse_ytdlp_progress. The extractor args put the android client
+    first (bot-check resistant) with web as fallback.
+    """
+    return [yt_dlp, "--no-playlist",
+            "--extractor-args", YTDLP_EXTRACTOR_ARGS,
+            "-f", YTDLP_FORMAT,
+            "--merge-output-format", "mp4",
+            "--newline",
+            "-o", output_template, url]
+
+
+_PROGRESS_RE = re.compile(r"\[download\]\s+(\d+(?:\.\d+)?)%")
+
+
+def parse_ytdlp_progress(line: str) -> Optional[float]:
+    """Parse a yt-dlp progress line -> percent float, or None.
+
+    "[download]  45.2% of  12.34MiB at  1.20MiB/s ETA 00:05" -> 45.2
+    "[download] 100% of ..." -> 100.0. Anything else -> None.
+    """
+    if not line:
+        return None
+    m = _PROGRESS_RE.search(line)
+    if not m:
+        return None
+    try:
+        return float(m.group(1))
+    except ValueError:
+        return None
+
+
+def _parse_duration_text(text: str) -> Optional[float]:
+    """Parse yt-dlp --get-duration output: seconds, MM:SS, or HH:MM:SS."""
+    s = (text or "").strip()
+    if not s:
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        pass
+    parts = s.split(":")
+    try:
+        nums = [float(x) for x in parts]
+    except ValueError:
+        return None
+    total = 0.0
+    for n in nums:
+        total = total * 60.0 + n
+    return total if total > 0 else None
+
+
+def get_youtube_info(yt_dlp: str, url: str,
+                     timeout: int = 60) -> Optional[dict]:
+    """Fetch a video's title + duration via yt-dlp (no download).
+
+    Returns {"title": str, "duration": float|None} or None on failure
+    (private / age-restricted / login-required / network error).
+    Never raises.
+    """
+    cmd = [yt_dlp, "--no-playlist",
+           "--extractor-args", YTDLP_EXTRACTOR_ARGS,
+           "--get-title", "--get-duration", "--no-download", url]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace",
+                           timeout=timeout, **_no_window_kwargs())
+    except Exception:
+        return None
+    if r.returncode != 0:
+        return None
+    lines = [ln.strip() for ln in (r.stdout or "").splitlines() if ln.strip()]
+    if not lines:
+        return None
+    title = lines[0]
+    duration = _parse_duration_text(lines[1]) if len(lines) > 1 else None
+    return {"title": title, "duration": duration}
+
+
+def sanitize_filename(name: str) -> str:
+    """Make a string safe as a Windows filename stem (same rules as
+    Bringas Render PC): illegal chars -> _, whitespace runs -> _,
+    max 120 chars, empty -> 'video'."""
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", str(name))
+    name = re.sub(r"\s+", "_", name.strip())
+    return name[:120] or "video"
+
+
+def unique_numbered_path(path: str) -> str:
+    """Never overwrite: if `path` exists, append ' (1)', ' (2)', ...
+    before the extension (Windows-Explorer style). A name that already
+    ends with ' (N)' counts up from N."""
+    if not os.path.exists(path):
+        return path
+    base, ext = os.path.splitext(path)
+    m = re.match(r"^(.*) \((\d+)\)$", base)
+    n = int(m.group(2)) if m else 0
+    if m:
+        base = m.group(1)
+    while True:
+        n += 1
+        cand = f"{base} ({n}){ext}"
+        if not os.path.exists(cand):
+            return cand
+
+
+def download_target_path(folder: str, title: str) -> Tuple[str, str]:
+    """(output_template, expected_mp4_path) for a downloaded video.
+
+    Name = sanitized video title + .mp4, inside `folder`, numbered
+    (1)/(2)... on collision. The template keeps %(ext)s so yt-dlp
+    substitutes the real extension (mp4, enforced by the merge
+    format), and the expected path is deterministic for the caller.
+    """
+    stem = os.path.join(folder, sanitize_filename(title))
+    expected = unique_numbered_path(stem + ".mp4")
+    template = os.path.splitext(expected)[0] + ".%(ext)s"
+    return template, expected
+
+
+def download_youtube_video(yt_dlp: str, url: str, output_template: str,
+                           expected_path: str, log: LogFn = _noop_log,
+                           progress_cb: Optional[Callable[[float], None]] = None
+                           ) -> Tuple[bool, Optional[str]]:
+    """Download one YouTube video with yt-dlp (streaming, for progress).
+
+    Runs yt-dlp with stdout+stderr merged so progress lines can be
+    parsed live; progress_cb is called when the percent moves >= 5
+    points or hits 100 (throttled — yt-dlp emits many lines per
+    second). Returns (True, expected_path) on success — yt-dlp exit 0
+    AND the .mp4 file exists and is non-empty — or (False, error_tail)
+    where error_tail is the last few non-empty output lines.
+    Never raises.
+    """
+    cmd = build_ytdlp_command(yt_dlp, url, output_template)
+    log("$ " + " ".join(cmd))
+    tail: List[str] = []
+    last_reported = -100.0
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT,
+                                text=True, encoding="utf-8",
+                                errors="replace",
+                                **_no_window_kwargs())
+    except Exception as e:
+        return False, f"Gagal menjalankan yt-dlp: {e}"
+    try:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            line = line.rstrip("\n")
+            if not line.strip():
+                continue
+            tail.append(line)
+            if len(tail) > 8:
+                tail.pop(0)
+            pct = parse_ytdlp_progress(line)
+            if pct is not None and progress_cb is not None:
+                if pct >= last_reported + 5.0 or pct >= 100.0:
+                    last_reported = pct
+                    try:
+                        progress_cb(pct)
+                    except Exception:
+                        pass
+        proc.wait()
+    except Exception as e:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        return False, f"Download terputus: {e}"
+    if proc.returncode != 0:
+        return False, "\n".join(tail[-5:]) or f"yt-dlp exit {proc.returncode}"
+    if os.path.isfile(expected_path) and os.path.getsize(expected_path) > 0:
+        return True, expected_path
+    # Fallback: yt-dlp sometimes writes a different extension despite
+    # --merge-output-format (e.g. single-format source). Prefer .mp4.
+    stem = os.path.splitext(expected_path)[0]
+    for ext in (".mp4", ".mkv", ".webm", ".m4v"):
+        cand = stem + ext
+        if os.path.isfile(cand) and os.path.getsize(cand) > 0:
+            return True, cand
+    return False, "yt-dlp selesai tapi file output tidak ketemu."
 
 
 # --------------------------------------------------------------------------

@@ -5,11 +5,14 @@ Cincang 1 video jadi banyak klip, audio dibuang total, tiap klip
 dikasih 1 efek random yang beda dari klip lain, nama file output acak.
 v1.1: 3 efek tambahan opsional per klip — mirror flip (50%), speed
 acak 0.92-1.08x, rotate miring acak 0.5-2 derajat — default ON semua.
+v1.2: sumber video 2 opsi — File lokal atau Download dari YouTube
+(via yt-dlp, kualitas 1080p terbaik, hasil .mp4).
 
 Jalankan:  python bringas_cut.py
            (atau double-click run.bat di Windows)
-ffmpeg.exe + ffprobe.exe harus ada di folder aplikasi atau di PATH
-(gyan.dev builds).
+ffmpeg.exe + ffprobe.exe + yt-dlp.exe harus ada di folder aplikasi
+atau di PATH (gyan.dev builds untuk ffmpeg; yt-dlp dari GitHub
+releases — setup-1-klik.bat yang download semuanya).
 """
 from __future__ import annotations
 
@@ -20,6 +23,7 @@ import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from pathlib import Path
+from typing import Optional
 
 import ffmpeg_utils as fu
 
@@ -48,8 +52,12 @@ class App(tk.Tk):
         self.ffmpeg_path = tk.StringVar(value=fu.find_ffmpeg())
         self.ffprobe_path = tk.StringVar(value=fu.find_ffprobe())
 
-        # State
+        # State — v1.2: sumber video 2 opsi (lokal / YouTube).
+        self.source_mode = tk.StringVar(value="local")  # local | youtube
         self.video_file = tk.StringVar()
+        self.yt_url = tk.StringVar()
+        self.yt_downloaded = tk.StringVar()  # path file hasil download
+        self.ytdlp_path = tk.StringVar(value=fu.find_yt_dlp() or "yt-dlp")
         self.min_dur = tk.StringVar(value="3")
         self.max_dur = tk.StringVar(value="8")
         self.intensity = tk.StringVar(value=fu.DEFAULT_INTENSITY)
@@ -140,15 +148,35 @@ class App(tk.Tk):
                  bg=BG, fg=MUTED).pack(anchor="w", pady=(0, 8))
         ttk.Separator(root, orient="horizontal").pack(fill="x", pady=(0, 8))
 
-        # ---- Video ----
-        vf = ttk.LabelFrame(root, text="1 — Video (1 file, lokal saja)", padding=8)
+        # ---- Sumber video (v1.2: 2 opsi) ----
+        vf = ttk.LabelFrame(root, text="1 — Sumber Video", padding=8)
         vf.pack(fill="x", pady=4)
+        ttk.Radiobutton(vf, text="File lokal",
+                        variable=self.source_mode, value="local",
+                        command=self._refresh_video_info).pack(anchor="w")
         row = ttk.Frame(vf); row.pack(fill="x", pady=2)
         ttk.Entry(row, textvariable=self.video_file, width=70).pack(side="left", fill="x", expand=True)
         ttk.Button(row, text="Browse…", command=self._pick_video_file).pack(side="left", padx=4)
+        ttk.Radiobutton(vf, text="Download dari YouTube (yt-dlp, kualitas 1080p terbaik)",
+                        variable=self.source_mode, value="youtube",
+                        command=self._refresh_video_info).pack(anchor="w")
+        row = ttk.Frame(vf); row.pack(fill="x", pady=2)
+        ttk.Entry(row, textvariable=self.yt_url, width=70).pack(side="left", fill="x", expand=True)
+        ttk.Button(row, text="⬇ Download", command=self._on_download_yt).pack(side="left", padx=4)
+        ttk.Button(row, text="Cek Info", command=self._on_check_yt).pack(side="left", padx=4)
+        self.yt_info = tk.Label(vf, text="Tempel URL video YouTube (watch / shorts / youtu.be), lalu Download.",
+                                bg=PANEL, fg=MUTED, anchor="w")
+        self.yt_info.pack(fill="x", pady=2)
+        tk.Label(vf, text="Download hanya untuk video milik sendiri / yang kamu punya hak pakainya. Download dari YouTube dapat melanggar Ketentuan Layanan YouTube. Satu video saja, bukan playlist; tanpa login — video private / age-restricted tidak bisa di-download.",
+                 bg=PANEL, fg=MUTED, wraplength=900, justify="left").pack(anchor="w")
         self.video_info = tk.Label(vf, text="Belum ada video dipilih.",
                                    bg=PANEL, fg=MUTED, anchor="w")
         self.video_info.pack(fill="x", pady=2)
+        yt_row = ttk.Frame(vf)
+        yt_row.pack(fill="x", pady=(2, 0))
+        self.ytdlp_label = ttk.Label(yt_row, text="yt-dlp: mengecek…")
+        self.ytdlp_label.pack(side="left")
+        self._refresh_ytdlp_label()
         gpu_row = ttk.Frame(vf)
         gpu_row.pack(fill="x", pady=(2, 0))
         ttk.Checkbutton(gpu_row, text="Pakai GPU kalau tersedia (NVENC / Quick Sync / AMF)",
@@ -209,9 +237,10 @@ class App(tk.Tk):
                  bg=PANEL, fg=MUTED, wraplength=900, justify="left").pack(anchor="w")
 
         # ---- Settings ----
-        sf = ttk.LabelFrame(root, text="Pengaturan ffmpeg", padding=8)
+        sf = ttk.LabelFrame(root, text="Pengaturan ffmpeg / yt-dlp", padding=8)
         sf.pack(fill="x", pady=4)
-        for label, var in (("ffmpeg:", self.ffmpeg_path), ("ffprobe:", self.ffprobe_path)):
+        for label, var in (("ffmpeg:", self.ffmpeg_path), ("ffprobe:", self.ffprobe_path),
+                           ("yt-dlp:", self.ytdlp_path)):
             r = ttk.Frame(sf); r.pack(fill="x", pady=1)
             tk.Label(r, text=label, bg=PANEL, fg=FG, width=9).pack(side="left")
             ttk.Entry(r, textvariable=var, width=70).pack(side="left", fill="x", expand=True)
@@ -232,9 +261,11 @@ class App(tk.Tk):
         self.log_text.pack(fill="both", expand=True, pady=4)
         tk.Label(root, text="◆ HYDRA TEAM BRINGAS — PERMUDAH HIDUPMU ◆",
                  font=("Consolas", 9, "bold"), bg=BG, fg=ACCENT2).pack(anchor="center", pady=(4, 0))
-        self._log("Bringas Cut siap. Pilih 1 video, atur Min/Max + intensitas, lalu POTONG.")
+        self._log("Bringas Cut siap. Pilih sumber video (File lokal / Download YouTube), atur Min/Max + intensitas, lalu POTONG.")
+        self._log("v1.2: download YouTube kualitas 1080p terbaik (yt-dlp) — file hasil download jadi .mp4 di folder output/downloads.")
         self._log("v1.1: efek tambahan flip / speed / rotate default ON (seksi 3) — matikan kalau tidak mau.")
         self._log("Catatan jujur: efek acak bikin klip makin beda dari aslinya, tapi TIDAK ADA jaminan 100% lolos Content ID / review reused-content YouTube.")
+        self._log("Download YouTube hanya untuk video milik sendiri / yang kamu punya hak pakainya — download dapat melanggar Ketentuan Layanan YouTube.")
         self._detect_gpu()
 
     # ------------------------------------------------------------- logging
@@ -260,6 +291,7 @@ class App(tk.Tk):
             filetypes=[("Video", "*.mp4 *.mov *.mkv *.avi *.webm *.m4v")])
         if p:
             self.video_file.set(p)
+            self.source_mode.set("local")
             self._planned_key = None
             self._refresh_video_info()
 
@@ -267,6 +299,148 @@ class App(tk.Tk):
         p = filedialog.askdirectory()
         if p:
             self.out_folder.set(p)
+
+    # ------------------------------------------------------------- sumber video
+    def _effective_video_path(self) -> str:
+        """Video yang dipakai untuk preview/potong: file lokal, atau
+        file hasil download YouTube (kalau sudah di-download)."""
+        if self.source_mode.get() == "youtube":
+            p = self.yt_downloaded.get()
+            return p if p and os.path.isfile(p) else ""
+        p = self.video_file.get()
+        return p if p and os.path.isfile(p) else ""
+
+    def _resolve_ytdlp(self) -> Optional[str]:
+        """yt-dlp dari kolom pengaturan, atau hasil pencarian otomatis."""
+        typed = self.ytdlp_path.get().strip()
+        if typed and typed != "yt-dlp":
+            if os.path.isfile(typed):
+                return typed
+        found = fu.find_yt_dlp(typed if typed and typed != "yt-dlp" else None)
+        return found
+
+    def _refresh_ytdlp_label(self):
+        found = self._resolve_ytdlp()
+        if found:
+            self.ytdlp_label.config(text=f"yt-dlp: ketemu ({os.path.basename(found)})")
+        else:
+            self.ytdlp_label.config(
+                text="yt-dlp: TIDAK ketemu — jalankan setup-1-klik.bat lagi untuk download yt-dlp.exe")
+
+    def _download_yt_sync(self, url: str, out_dir: str) -> str:
+        """Download 1 video YouTube (blocking, dipanggil dari worker
+        thread): cek info dulu, lalu download ke <out_dir>/downloads.
+        Return path file .mp4 hasil download. Raise RuntimeError kalau
+        gagal (pesan error yt-dlp disertakan)."""
+        log = self._log
+        problem = fu.youtube_url_problem(url)
+        if problem:
+            raise RuntimeError(problem)
+        ytdlp = self._resolve_ytdlp()
+        if not ytdlp:
+            raise RuntimeError("yt-dlp tidak ketemu — jalankan setup-1-klik.bat "
+                               "lagi untuk download yt-dlp.exe.")
+        log(f"Download YouTube: {url}")
+        info = fu.get_youtube_info(ytdlp, url)
+        if info is None:
+            raise RuntimeError("yt-dlp gagal membaca info video — mungkin video "
+                               "private / age-restricted / butuh login, atau "
+                               "YouTube memblokir permintaan dari IP ini "
+                               "(coba lagi nanti / dari jaringan lain).")
+        title = info["title"]
+        dur = info["duration"]
+        dur_txt = f"{dur:.0f}s" if dur else "durasi tidak diketahui"
+        log(f"Video: {title} ({dur_txt})")
+        self.after(0, lambda: self.yt_info.config(
+            text=f"{title} — {dur_txt}"))
+        dl_dir = os.path.join(out_dir, "downloads")
+        os.makedirs(dl_dir, exist_ok=True)
+        template, expected = fu.download_target_path(dl_dir, title)
+        last_pct = {"v": -1}
+
+        def _progress(pct: float):
+            log(f"  download: {pct:.0f}%")
+            last_pct["v"] = pct
+
+        ok, result = fu.download_youtube_video(
+            ytdlp, url, template, expected, log=log, progress_cb=_progress)
+        if not ok:
+            raise RuntimeError(f"Download YouTube gagal:\n{result}")
+        self.yt_downloaded.set(result)
+        self._planned_key = None
+        log(f"Download selesai (1080p terbaik): {result}")
+        return result
+
+    def _on_check_yt(self):
+        if self.running:
+            return
+        url = self.yt_url.get().strip()
+        problem = fu.youtube_url_problem(url)
+        if problem:
+            messagebox.showerror("URL YouTube", problem)
+            return
+        ytdlp = self._resolve_ytdlp()
+        if not ytdlp:
+            messagebox.showerror("yt-dlp", "yt-dlp tidak ketemu — jalankan "
+                                 "setup-1-klik.bat lagi untuk download yt-dlp.exe.")
+            return
+        self.source_mode.set("youtube")
+        self.running = True
+        t = threading.Thread(target=self._check_yt_worker,
+                             args=(url, ytdlp), daemon=True)
+        t.start()
+
+    def _check_yt_worker(self, url: str, ytdlp: str):
+        try:
+            self._log(f"Cek info video: {url}")
+            info = fu.get_youtube_info(ytdlp, url)
+            if info is None:
+                raise RuntimeError("yt-dlp gagal membaca info video — mungkin "
+                                   "video private / age-restricted / butuh "
+                                   "login, atau YouTube memblokir IP ini.")
+            dur = info["duration"]
+            dur_txt = f"{dur:.0f}s" if dur else "durasi tidak diketahui"
+            self.after(0, lambda: self.yt_info.config(
+                text=f"{info['title']} — {dur_txt}"))
+            self._log(f"Info: {info['title']} ({dur_txt})")
+        except Exception as e:
+            self._log(f"❌ GAGAL cek info: {e}")
+            self.after(0, lambda e=e: messagebox.showerror("Gagal", str(e)))
+        finally:
+            self.after(0, lambda: setattr(self, "running", False))
+
+    def _on_download_yt(self):
+        if self.running:
+            return
+        url = self.yt_url.get().strip()
+        problem = fu.youtube_url_problem(url)
+        if problem:
+            messagebox.showerror("URL YouTube", problem)
+            return
+        out_dir = self.out_folder.get().strip()
+        if not out_dir:
+            messagebox.showerror("Output", "Isi folder output dulu.")
+            return
+        self.source_mode.set("youtube")
+        self.running = True
+        self.progress.start(10)
+        t = threading.Thread(target=self._download_yt_worker,
+                             args=(url, out_dir), daemon=True)
+        t.start()
+
+    def _download_yt_worker(self, url: str, out_dir: str):
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+            path = self._download_yt_sync(url, out_dir)
+            self.after(0, self._refresh_video_info)
+            self.after(0, lambda: messagebox.showinfo(
+                "Download selesai", f"Video sudah di-download:\n{path}\n\n"
+                "Tinggal klik POTONG buat mencincangnya."))
+        except Exception as e:
+            self._log(f"❌ GAGAL download: {e}")
+            self.after(0, lambda e=e: messagebox.showerror("Gagal", str(e)))
+        finally:
+            self.after(0, self._finish_run)
 
     # ------------------------------------------------------------- probe cache
     def _spec(self, path: str) -> fu.MediaInfo:
@@ -276,8 +450,13 @@ class App(tk.Tk):
         return self._spec_cache[path]
 
     def _refresh_video_info(self):
-        p = self.video_file.get()
+        p = self._effective_video_path()
         if not p:
+            if self.source_mode.get() == "youtube":
+                self.video_info.config(
+                    text="Mode YouTube: tempel URL lalu klik Download dulu.")
+            else:
+                self.video_info.config(text="Belum ada video dipilih.")
             return
         info = self._spec(p)
         if info.duration <= 0 or info.width <= 0:
@@ -326,7 +505,7 @@ class App(tk.Tk):
     def _plan(self, total: float, mn: float, mx: float):
         """Plan (durations, effects, extras_list); reuse the preview plan
         when the settings key matches, so Preview and POTONG agree."""
-        key = (self.video_file.get(), mn, mx, self.intensity.get(),
+        key = (self._effective_video_path(), mn, mx, self.intensity.get(),
                self.flip_var.get(), self.speed_var.get(), self.rotate_var.get())
         if self._planned_key == key and self._planned is not None:
             return self._planned
@@ -342,9 +521,14 @@ class App(tk.Tk):
         return self._planned
 
     def _on_preview(self):
-        p = self.video_file.get()
+        p = self._effective_video_path()
         if not p:
-            messagebox.showinfo("Preview", "Pilih file video dulu.")
+            if self.source_mode.get() == "youtube":
+                messagebox.showinfo("Preview", "Mode YouTube: tempel URL lalu "
+                                  "klik Download dulu (atau klik POTONG — "
+                                  "download jalan otomatis).")
+            else:
+                messagebox.showinfo("Preview", "Pilih file video dulu.")
             return
         try:
             mn, mx = self._read_min_max()
@@ -390,10 +574,16 @@ class App(tk.Tk):
     def _on_cut(self):
         if self.running:
             return
-        p = self.video_file.get()
-        if not p or not os.path.isfile(p):
-            messagebox.showerror("Video", "Pilih file video dulu.")
-            return
+        p = self._effective_video_path()
+        if not p:
+            # Mode YouTube + URL ada tapi belum di-download: POTONG
+            # download dulu otomatis di worker, baru cincang.
+            if self.source_mode.get() == "youtube" and self.yt_url.get().strip():
+                p = ""
+            else:
+                messagebox.showerror("Video", "Pilih file video dulu "
+                                     "(atau tempel URL YouTube lalu Download).")
+                return
         try:
             mn, mx = self._read_min_max()
         except ValueError as e:
@@ -414,6 +604,11 @@ class App(tk.Tk):
         log = self._log
         try:
             os.makedirs(out_dir, exist_ok=True)
+            if not video_path:
+                # Mode YouTube, belum di-download: download dulu, baru cincang.
+                log("Mode YouTube: download dulu sebelum potong…")
+                video_path = self._download_yt_sync(
+                    self.yt_url.get().strip(), out_dir)
             ff = self.ffmpeg_path.get() or fu.find_ffmpeg()
             fp = self.ffprobe_path.get() or fu.find_ffprobe()
             info = fu.probe_specs(video_path, ffprobe=fp)

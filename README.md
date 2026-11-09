@@ -24,12 +24,14 @@ Double-click **`setup-1-klik.bat`**, tunggu sampai ada tulisan `SELESAI`, beres.
 
 Yang dilakukan otomatis, berurutan:
 
-1. **[1/4] Cek Python.** Kalau belum ada, install otomatis (coba `winget` dulu,
+1. **[1/5] Cek Python.** Kalau belum ada, install otomatis (coba `winget` dulu,
    kalau gagal download installer Python 3.12 dari python.org lalu install silent).
-2. **[2/4] Cek ffmpeg.exe + ffprobe.exe.** Kalau belum ada, download otomatis
+2. **[2/5] Cek ffmpeg.exe + ffprobe.exe.** Kalau belum ada, download otomatis
    dari gyan.dev lalu taruh di folder ini (sebelah .exe nanti).
-3. **[3/4] Install PyInstaller** otomatis (pip).
-4. **[4/4] Build `BringasCut.exe`** otomatis, lalu dibuka.
+3. **[3/5] Cek yt-dlp.exe** (buat download dari YouTube). Kalau belum ada,
+   download otomatis dari GitHub releases lalu taruh di folder ini.
+4. **[4/5] Install PyInstaller** otomatis (pip).
+5. **[5/5] Build `BringasCut.exe`** otomatis, lalu dibuka.
 
 Yang lo butuhkan cuma: **Windows 10/11 + internet**. Tidak perlu install Python
 manual, tidak perlu centang "Add Python to PATH" manual. Tidak butuh admin.
@@ -41,14 +43,29 @@ fallback ke PowerShell dengan timeout dimatikan (`-TimeoutSec 0`).
 Alternatif: jalankan **`run.bat`** (cek Python + ffmpeg, lalu buka GUI dari
 source), atau **`build_exe.bat`** (build `.exe` saja, tanpa setup Python/ffmpeg).
 
-> `ffmpeg.exe` + `ffprobe.exe` **TIDAK** dibundel ke dalam `.exe`. Taruh di folder
-> yang sama dengan `BringasCut.exe`, atau di PATH.
+> `ffmpeg.exe` + `ffprobe.exe` + `yt-dlp.exe` **TIDAK** dibundel ke dalam `.exe`.
+> Taruh di folder yang sama dengan `BringasCut.exe`, atau di PATH.
 
 ## Cara Pakai
 
 1. Buka `BringasCut.exe` (atau `run.bat`).
-2. **1 — Video:** Browse 1 file video lokal (`.mp4`, `.mov`, `.mkv`, `.avi`,
-   `.webm`). Tidak ada download dari YouTube — siapkan file videonya dulu.
+2. **1 — Sumber Video (v1.2): 2 opsi.**
+   - **File lokal:** Browse 1 file video (`.mp4`, `.mov`, `.mkv`, `.avi`, `.webm`).
+   - **Download dari YouTube:** tempel URL video (`youtube.com/watch`,
+     `youtube.com/shorts/`, `youtu.be/`, `music.youtube.com`), klik
+     **Cek Info** buat lihat judul + durasi dulu, atau langsung
+     **⬇ Download**. Kualitas download: **1080p terbaik** — format
+     terbaik dengan tinggi ≤ 1080 (kalau sumbernya 4K, diambil 1080-nya;
+     kalau sumber max 720p, diambil 720p), hasil akhir **wajib .mp4**.
+     File hasil download tersimpan di `folder output/downloads/` dengan
+     nama = judul video, lalu otomatis jadi sumber potongan. Kalau klik
+     **✂ POTONG** saat URL sudah ditempel tapi belum di-download,
+     download jalan dulu otomatis baru cincang.
+   - Satu video saja, **bukan playlist**. Tanpa login — video private /
+     age-restricted tidak bisa di-download.
+   - ⚠️ **Download hanya untuk video milik sendiri / yang kamu punya hak
+     pakainya.** Download dari YouTube dapat melanggar Ketentuan Layanan
+     YouTube.
 3. **2 — Potong & Efek:**
    - **Min / Max durasi klip (detik):** default Min **3**, Max **8**. Tiap klip
      durasinya diacak di antara Min-Max. Isi semaunya lo (Min minimal 1 detik).
@@ -70,6 +87,15 @@ tiap klip 3-8 detik, efek beda-beda, nama file acak kayak `a7k9x2q4m1.mp4`.
 
 ## Fitur
 
+- **Download YouTube (v1.2, baru):** sumber video 2 opsi — File lokal atau
+  Download dari YouTube via yt-dlp. Kualitas **1080p terbaik** (lihat
+  "Cara Pakai" di atas), hasil akhir wajib `.mp4`, tidak pernah di atas
+  1080p. Progress download tampil di log (tiap 5%). File hasil download
+  tersimpan di `folder output/downloads/` (nama = judul video, anti-timpa
+  gaya `(1)`, `(2)`). yt-dlp dicari di sebelah aplikasi dulu, lalu di PATH;
+  kalau tidak ketemu, GUI menyuruh jalankan `setup-1-klik.bat` lagi —
+  yt-dlp tidak pernah di-download diam-diam saat render. **Tidak didukung:**
+  playlist, login/cookies, video private / age-restricted, live.
 - **Cincang acak:** durasi tiap klip random uniform di [Min, Max].
 - **Sisa akhir digabung:** kalau sisa di ujung video < Min, sisa itu digabung
   ke klip terakhir (klip terakhir bisa sampai Max + Min). Tidak pernah ada
@@ -151,6 +177,36 @@ tiap klip 3-8 detik, efek beda-beda, nama file acak kayak `a7k9x2q4m1.mp4`.
     `avg_frame_rate` tetap 30/1) karena muxer MP4 (vsync CFR default)
     yang menormalkan frame rate. Durasi output = rencana / speed.
   - Chain lengkap per klip: `zoompan,rotate,hflip,setpts,format`.
+- **Download YouTube v1.2** (`is_youtube_url` + `build_ytdlp_command` +
+  `parse_ytdlp_progress` + `find_yt_dlp` + `download_youtube_video`,
+  di `ffmpeg_utils.py`):
+  - URL diterima: `youtube.com/watch`, `/shorts/`, `/embed/`, `/live/`,
+    `/v/`, `music.youtube.com`, `youtu.be/<id>` (boleh tanpa `https://`).
+    Domain lain, URL kosong, dan `/playlist` ditolak dengan pesan jelas.
+    URL playlist yang ada `v=`-nya tetap jalan — yt-dlp `--no-playlist`
+    hanya download video itu saja.
+  - Format string: `bv*[height<=1080][ext=mp4]+ba[ext=m4a]/bv*[height<=1080]+ba/b[height<=1080][ext=mp4]/b[height<=1080]`
+    + `--merge-output-format mp4`. Artinya: video terbaik ≤1080p dulu
+    (utamakan mp4), audio terbaik, lalu di-merge ke `.mp4`.
+  - Player client: `--extractor-args "youtube:player_client=android,web"` —
+    android dulu, web sebagai fallback. Alasannya terverifikasi 2026-11-09:
+    dari VM ini (IP proxy bersama) client web kena HTTP 429 / bot-check di
+    semua request, sementara android berhasil baca info + download. Catatan
+    jujur: di IP yang kena bot-check, client android bisa kena batasan SABR
+    dan hanya menawarkan tinggi yang lebih rendah (contoh: video lama yang
+    diuji cuma dapat 360p) — cap ≤1080 tetap berlaku, itu yang terbaik
+    yang *tersedia* di jaringan itu. Di PC rumahan biasa, client web
+    seharusnya menyediakan 1080p.
+  - Nama file download = judul video yang di-sanitize (karakter ilegal →
+    `_`, spasi → `_`, max 120 char) + `.mp4`, di `folder output/downloads/`,
+    anti-timpa `(1)`, `(2)`. Template yt-dlp `Judul.%(ext)s` dipakai supaya
+    path hasil deterministic buat caller.
+  - Progress: yt-dlp jalan dengan `--newline`, output digabung
+    (stdout+stderr) dan di-parse live (`[download] 45.2% ...` → 45.2);
+    callback dipanggil tiap naik ≥5% atau 100%. Sukses = yt-dlp exit 0 +
+    file `.mp4` ada dan tidak 0 byte. Gagal → 5 baris terakhir output
+    ditampilkan sebagai error (mis. video private / butuh login).
+  - Tanpa jendela cmd hitam: `CREATE_NO_WINDOW` juga buat yt-dlp.
 - **GPU:** deteksi dari `ffmpeg -encoders` + **verifikasi tiap kandidat
   dengan encode 1-frame**. Daftar `-encoders` saja bukan bukti — NVENC
   terdaftar walau tanpa GPU NVIDIA. Deteksi sekali per ffmpeg (cache).
@@ -167,7 +223,7 @@ tiap klip 3-8 detik, efek beda-beda, nama file acak kayak `a7k9x2q4m1.mp4`.
 | `bringas_cut.py` | GUI Tkinter (video picker, Min/Max, intensitas, efek tambahan, GPU, preview, POTONG) |
 | `ffmpeg_utils.py` | Logika inti: probe, GPU, efek (zoompan) + efek tambahan v1.1 (flip/speed/rotate), plan klip, nama acak, render |
 | `test_logic.py` | Self-test (logika + integrasi ffmpeg), jalankan `python3 test_logic.py` |
-| `setup-1-klik.bat` | Setup 1 klik: Python + ffmpeg + PyInstaller + build .exe |
+| `setup-1-klik.bat` | Setup 1 klik: Python + ffmpeg + yt-dlp + PyInstaller + build .exe |
 | `build_exe.bat` | Build `BringasCut.exe` saja (PyInstaller) |
 | `run.bat` | Jalankan GUI dari source |
 | `requirements.txt` | Stdlib only, tanpa dependensi pihak ketiga |
@@ -193,6 +249,45 @@ ffmpeg: 5 klip (flip saja, speed 1.08x, speed 0.92x, rotate 2.0°, kombinasi
 flip+speed+rotate) dicek durasi ≈ rencana/speed, resolusi tetap, tanpa audio —
 plus bukti piksel: frame klip flip **benar-benar beda** dari frame klip polos,
 dan `extras=None` menghasilkan durasi = rencana (perilaku v1). Total v1.1: **326 passed, 0 failed**.
+
+**v1.2: ditambah tes download YouTube** — `is_youtube_url` (watch / shorts /
+youtu.be / music / embed / live diterima; vimeo / facebook / tiktok / playlist /
+URL kosong ditolak), `youtube_url_problem` (pesan khusus playlist), command
+yt-dlp (format cap `height<=1080`, merge mp4, `--no-playlist`, `--newline`,
+extractor-args `android,web`), `parse_ytdlp_progress` (45.2% / 2.4% / 100% /
+baris non-progress → None), `find_yt_dlp` (explicit / PATH mock / None kalau
+tidak ada), sanitize + penomoran `(1)` + `download_target_path`, info video
+dan download via **yt-dlp palsu** (skrip tiruan: info, progress 50% + 100%,
+gagal → error tail), alur lengkap fake-download → cincang 1 klip, dan
+**download YouTube beneran** di VM ini: video publik "Me at the zoo" (19 detik)
+judul + durasi terbaca, file `.mp4` hasil download ada, tinggi ≤ 1080, sumber
+punya audio. Total v1.2: **410 passed, 0 failed**.
+
+## Catatan v1.2
+
+- Sumber video sekarang 2 opsi: File lokal (perilaku lama, tidak berubah) dan
+  Download dari YouTube (baru). Download kualitas **1080p terbaik** — format
+  terbaik ≤1080p, hasil akhir wajib `.mp4`. Kalau sumbernya cuma 720p, yang
+  di-download 720p (yang terbaik yang ada); kalau sumbernya 4K, diambil
+  1080-nya, bukan 4K.
+- yt-dlp **tidak** dibundel ke repo (sama kayak ffmpeg) — `setup-1-klik.bat`
+  download `yt-dlp.exe` dari GitHub releases. Kalau yt-dlp tidak ketemu, GUI
+  menampilkan pesan jelas, bukan crash.
+- **Yang tidak didukung:** playlist, login/cookies, video private /
+  age-restricted, live. Video yang butuh login akan gagal dengan pesan error
+  yt-dlp apa adanya di log.
+- **Catatan jaringan (jujur):** dari VM ini (IP proxy bersama), client web
+  YouTube kena HTTP 429 / bot-check, jadi download memakai client android
+  sebagai fallback — dan client android bisa kena batasan SABR yang
+  membatasi tinggi yang tersedia (video tes lama cuma dapat 360p). Di PC
+  rumahan biasa, client web seharusnya menyediakan 1080p. Format string-nya
+  sendiri sudah benar: ia selalu memilih yang terbaik ≤1080p dari format
+  yang tersedia.
+- **ToS:** download hanya untuk video milik sendiri / yang kamu punya hak
+  pakainya. Download dari YouTube dapat melanggar Ketentuan Layanan YouTube.
+- Pengingat jujur (tetap berlaku): efek tambahan bikin klip makin beda dari
+  aslinya dan makin susah dicocokkan fingerprint, tapi **TIDAK ADA jaminan
+  100% lolos** Content ID / review reused-content YouTube.
 
 ## Catatan v1.1
 

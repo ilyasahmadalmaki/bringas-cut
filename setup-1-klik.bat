@@ -4,14 +4,14 @@ REM  Bringas Cut - Setup 1 Klik (untuk yang awam)
 REM  Double-click file ini, tunggu sampai selesai, beres.
 REM
 REM  Yang dilakukan otomatis, berurutan:
-REM   [1/4] Cek Python. Kalau belum ada, install otomatis
+REM   [1/5] Cek Python. Kalau belum ada, install otomatis
 REM         (coba winget dulu, kalau gagal download installer
 REM         Python 3.12 dari python.org lalu install silent).
-REM   [2/4] Cek ffmpeg.exe + ffprobe.exe. Kalau belum ada,
+REM   [2/5] Cek ffmpeg.exe + ffprobe.exe. Kalau belum ada,
 REM         download otomatis dari gyan.dev lalu taruh di
 REM         folder ini (sebelah .exe nanti).
-REM   [3/4] Install PyInstaller otomatis (pip).
-REM   [4/4] Build BringasCut.exe otomatis, lalu dibuka.
+REM   [4/5] Install PyInstaller otomatis (pip).
+REM   [5/5] Build BringasCut.exe otomatis, lalu dibuka.
 REM
 REM  Download pakai curl dulu (bawaan Windows 10/11, tahan
 REM  file besar + retry otomatis 3x). Kalau curl gagal, baru
@@ -35,8 +35,8 @@ echo  Jangan tutup jendela ini sebelum ada tulisan SELESAI.
 echo ============================================================
 echo.
 
-REM ---------- [1/4] Python ----------
-echo [1/4] Cek Python...
+REM ---------- [1/5] Python ----------
+echo [1/5] Cek Python...
 python --version >nul 2>&1
 if not errorlevel 1 goto :python_ok
 
@@ -82,8 +82,8 @@ if errorlevel 1 (
 for /f "tokens=*" %%v in ('python --version 2^>^&1') do echo Python ketemu: %%v
 echo.
 
-REM ---------- [2/4] ffmpeg ----------
-echo [2/4] Cek ffmpeg...
+REM ---------- [2/5] ffmpeg ----------
+echo [2/5] Cek ffmpeg...
 if exist ffmpeg.exe if exist ffprobe.exe goto :ffmpeg_ok
 
 echo ffmpeg belum ada, lagi download otomatis dari gyan.dev...
@@ -120,8 +120,36 @@ if not exist ffprobe.exe (
 echo ffmpeg ketemu: ffmpeg.exe + ffprobe.exe
 echo.
 
-REM ---------- [3/4] PyInstaller ----------
-echo [3/4] Install PyInstaller (sekali saja)...
+REM ---------- [3/5] yt-dlp ----------
+echo [3/5] Cek yt-dlp (buat download dari YouTube)...
+if exist yt-dlp.exe goto :ytdlp_ok
+where yt-dlp >nul 2>&1
+if not errorlevel 1 goto :ytdlp_ok
+
+echo yt-dlp belum ada, lagi download otomatis dari GitHub...
+echo (File sekitar 15 MB, jangan ditutup.)
+call :download "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe" "%~dp0yt-dlp.exe"
+if errorlevel 1 (
+  echo.
+  echo GAGAL download yt-dlp setelah 3x coba. Cek internet lo, lalu
+  echo double-click file ini lagi.
+  pause
+  exit /b 1
+)
+if not exist yt-dlp.exe (
+  echo.
+  echo GAGAL pasang yt-dlp. Cek internet lo, lalu
+  echo double-click file ini lagi.
+  pause
+  exit /b 1
+)
+
+:ytdlp_ok
+echo yt-dlp ketemu.
+echo.
+
+REM ---------- [4/5] PyInstaller ----------
+echo [4/5] Install PyInstaller (sekali saja)...
 python -m pip install --upgrade pip >nul 2>&1
 python -m pip install pyinstaller
 if errorlevel 1 (
@@ -133,8 +161,8 @@ if errorlevel 1 (
 )
 echo.
 
-REM ---------- [4/4] Build EXE ----------
-echo [4/4] Build BringasCut.exe (ini paling lama, 1-3 menit)...
+REM ---------- [5/5] Build EXE ----------
+echo [5/5] Build BringasCut.exe (ini paling lama, 1-3 menit)...
 python -m PyInstaller --noconfirm --onefile --windowed --name BringasCut bringas_cut.py
 if errorlevel 1 (
   echo.
@@ -158,7 +186,7 @@ echo  SELESAI!
 echo.
 echo  Aplikasi lo ada di: BringasCut.exe
 echo  (di folder ini, sebelah file setup ini)
-echo  ffmpeg.exe + ffprobe.exe juga sudah ada di sebelahnya.
+echo  ffmpeg.exe + ffprobe.exe + yt-dlp.exe juga sudah ada di sebelahnya.
 echo.
 echo  Tinggal double-click BringasCut.exe buat pakai.
 echo ============================================================
