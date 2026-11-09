@@ -410,6 +410,14 @@ args = sys.argv[1:]
 if os.environ.get("FAKE_YT_FAIL") == "1":
     print("ERROR: Video ini private", file=sys.stderr)
     sys.exit(1)
+if "-J" in args:
+    import json
+    print(json.dumps({"title": "Video Tes Palsu", "duration": 10,
+                      "formats": [
+                          {"format_id": "18", "vcodec": "avc1", "height": 240},
+                          {"format_id": "5", "vcodec": "avc1", "height": 144},
+                          {"format_id": "140", "vcodec": "none", "height": None}]}))
+    sys.exit(0)
 if "--get-title" in args:
     print("Video Tes Palsu")
     if "--get-duration" in args:
@@ -442,8 +450,9 @@ def _make_fake_ytdlp(tmp):
 def test_get_youtube_info_fake(tmp):
     fake = _make_fake_ytdlp(tmp)
     info = fu.get_youtube_info(fake, "https://youtu.be/FAKE1234567")
-    check("yt info palsu: judul + durasi terbaca",
-          info == {"title": "Video Tes Palsu", "duration": 10.0}, str(info))
+    check("yt info palsu: judul + durasi + kualitas max terbaca",
+          info == {"title": "Video Tes Palsu", "duration": 10.0,
+                   "max_height": 240, "download_height": 240}, str(info))
     # Mode gagal -> None (bukan exception)
     os.environ["FAKE_YT_FAIL"] = "1"
     try:
@@ -451,6 +460,26 @@ def test_get_youtube_info_fake(tmp):
               fu.get_youtube_info(fake, "https://youtu.be/FAKE1234567") is None)
     finally:
         del os.environ["FAKE_YT_FAIL"]
+
+
+def test_heights_from_formats():
+    # Video 4K: max 2160, tapi download tetap 1080 (cap format string).
+    check("heights: 4K -> max 2160 / download 1080",
+          fu._heights_from_formats([
+              {"vcodec": "avc1", "height": 2160},
+              {"vcodec": "avc1", "height": 1080},
+              {"vcodec": "avc1", "height": 720},
+              {"vcodec": "none", "height": None}]) == (2160, 1080))
+    # 'Me at the zoo': cuma 240p — max = download = 240.
+    check("heights: 240p-only -> max 240 / download 240",
+          fu._heights_from_formats([
+              {"vcodec": "avc1", "height": 240},
+              {"vcodec": "none", "height": None}]) == (240, 240))
+    # Tanpa format video -> (None, None).
+    check("heights: tanpa video -> (None, None)",
+          fu._heights_from_formats([
+              {"vcodec": "none", "height": None},
+              {"vcodec": "avc1", "height": 0}]) == (None, None))
 
 
 def test_download_youtube_fake(tmp):
@@ -810,6 +839,10 @@ def test_integration_real_youtube(tmp):
     check("integration YouTube: durasi ~19 detik",
           info["duration"] is not None and abs(info["duration"] - 19) < 2,
           str(info))
+    check("integration YouTube: max video 240p (bukan salah tool)",
+          info.get("max_height") == 240, str(info))
+    check("integration YouTube: download height 240",
+          info.get("download_height") == 240, str(info))
     dl = os.path.join(tmp, "yt_real")
     os.makedirs(dl, exist_ok=True)
     tmpl, exp = fu.download_target_path(dl, info["title"])
@@ -833,6 +866,74 @@ def shutil_which(name):
     return shutil.which(name)
 
 
+def test_logo_assets():
+    """v1.3 — logo resmi: PNG + ICO valid, terpasang di GUI/README/build."""
+    import struct
+    base = Path(__file__).resolve().parent
+    png = base / "assets" / "bringas-cut-logo.png"
+    ico = base / "assets" / "bringas-cut.ico"
+    check("logo: PNG ada", png.is_file(), str(png))
+    check("logo: ICO ada", ico.is_file(), str(ico))
+    if png.is_file():
+        raw = png.read_bytes()
+        check("logo: PNG magic bytes benar",
+              raw[:8] == b"\x89PNG\r\n\x1a\n", raw[:8].hex())
+        w, h, _bit, ctype = struct.unpack(">IIBB", raw[16:26])
+        check("logo: PNG 1600x1600", (w, h) == (1600, 1600), f"{w}x{h}")
+        check("logo: PNG RGBA (color type 6, sudut transparan)",
+              ctype == 6, f"color type {ctype}")
+        check("logo: PNG bukan placeholder (>100KB)",
+              len(raw) > 100_000, f"{len(raw)} bytes")
+    if ico.is_file():
+        raw = ico.read_bytes()
+        check("logo: ICO magic bytes benar",
+              raw[:4] == b"\x00\x00\x01\x00", raw[:4].hex())
+        count = struct.unpack("<H", raw[4:6])[0]
+        sizes = set()
+        for i in range(count):
+            entry = raw[6 + i * 16: 6 + (i + 1) * 16]
+            bw, bh = entry[0], entry[1]
+            sizes.add((bw if bw else 256, bh if bh else 256))
+        check("logo: ICO berisi 16/32/48/256",
+              {(16, 16), (32, 32), (48, 48), (256, 256)} <= sizes, str(sizes))
+    readme = (base / "README.md").read_text(encoding="utf-8")
+    check("logo: README menampilkan logo",
+          "assets/bringas-cut-logo.png" in readme)
+    build_bat = (base / "build_exe.bat").read_text(encoding="utf-8")
+    check("logo: build_exe.bat pakai --icon",
+          "--icon assets\\bringas-cut.ico" in build_bat)
+    check("logo: build_exe.bat bundle PNG logo",
+          '--add-data "assets\\bringas-cut-logo.png;assets"' in build_bat)
+    gui = (base / "bringas_cut.py").read_text(encoding="utf-8")
+    check("logo: GUI pasang iconphoto",
+          "iconphoto" in gui and "bringas-cut-logo.png" in gui)
+    check("logo: GUI pakai resource_path + _MEIPASS",
+          "def resource_path" in gui and "_MEIPASS" in gui)
+    # Fungsional: resource_path tanpa _MEIPASS -> folder script (file ada);
+    # dengan _MEIPASS palsu -> folder itu.
+    try:
+        import bringas_cut as bc
+        had = hasattr(sys, "_MEIPASS")
+        old = getattr(sys, "_MEIPASS", None)
+        try:
+            if had:
+                delattr(sys, "_MEIPASS")
+            p = bc.resource_path(bc.LOGO_PNG_REL)
+            check("logo: resource_path (source) ketemu file",
+                  p.is_file(), str(p))
+            sys._MEIPASS = str(base)
+            p2 = bc.resource_path(bc.LOGO_PNG_REL)
+            check("logo: resource_path (_MEIPASS) ketemu file",
+                  p2.is_file() and str(p2).startswith(str(base)), str(p2))
+        finally:
+            if had:
+                sys._MEIPASS = old
+            elif hasattr(sys, "_MEIPASS"):
+                delattr(sys, "_MEIPASS")
+    except Exception as e:
+        check("logo: import bringas_cut + resource_path jalan", False, str(e))
+
+
 def main():
     print("== Bringas Cut — self test ==")
     with tempfile.TemporaryDirectory(prefix="bringas_cut_test_") as tmp:
@@ -852,6 +953,7 @@ def main():
         test_sanitize_and_numbered_path(tmp)
         test_download_target_path(tmp)
         test_get_youtube_info_fake(tmp)
+        test_heights_from_formats()
         test_download_youtube_fake(tmp)
         test_gpu_detection()
         test_video_encoder_args()
@@ -860,6 +962,7 @@ def main():
         test_integration_extra_effects(tmp)
         test_integration_fake_download_to_cut(tmp)
         test_integration_real_youtube(tmp)
+        test_logo_assets()
     print(f"\n{PASS} passed, {FAIL} failed")
     return 1 if FAIL else 0
 

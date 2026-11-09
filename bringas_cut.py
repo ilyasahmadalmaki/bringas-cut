@@ -7,6 +7,8 @@ v1.1: 3 efek tambahan opsional per klip — mirror flip (50%), speed
 acak 0.92-1.08x, rotate miring acak 0.5-2 derajat — default ON semua.
 v1.2: sumber video 2 opsi — File lokal atau Download dari YouTube
 (via yt-dlp, kualitas 1080p terbaik, hasil .mp4).
+v1.3: Cek Info nunjukin kualitas max video sebelum download, plus
+logo resmi (icon jendela + icon .exe + README).
 
 Jalankan:  python bringas_cut.py
            (atau double-click run.bat di Windows)
@@ -19,6 +21,7 @@ from __future__ import annotations
 import os
 import queue
 import random
+import sys
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -40,6 +43,17 @@ OK = "#2ee59d"
 
 VIDEO_EXTS = fu.VIDEO_EXTS
 
+# v1.3 — logo resmi (gunting neon motong strip film).
+LOGO_PNG_REL = Path("assets") / "bringas-cut-logo.png"
+
+
+def resource_path(rel: Path) -> Path:
+    """Path ke file aset: di dalam bundle PyInstaller (--add-data) file
+    tinggal di sys._MEIPASS; kalau jalan dari source, relatif ke folder
+    script ini. Dipakai buat icon jendela."""
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    return base / rel
+
 
 class App(tk.Tk):
     def __init__(self):
@@ -47,6 +61,16 @@ class App(tk.Tk):
         self.title("Bringas Cut — HYDRA TEAM BRINGAS")
         self.geometry("980x820")
         self.configure(bg=BG)
+        # v1.3 — logo resmi sebagai icon jendela. Gagal (file hilang /
+        # Tk lama) = abaikan saja, app tetap jalan tanpa icon.
+        self._icon_img = None
+        try:
+            _icon_path = resource_path(LOGO_PNG_REL)
+            if _icon_path.is_file():
+                self._icon_img = tk.PhotoImage(file=str(_icon_path))
+                self.iconphoto(False, self._icon_img)
+        except Exception:
+            pass
         self.log_q: queue.Queue = queue.Queue()
         self.running = False
         self.ffmpeg_path = tk.StringVar(value=fu.find_ffmpeg())
@@ -350,9 +374,18 @@ class App(tk.Tk):
         title = info["title"]
         dur = info["duration"]
         dur_txt = f"{dur:.0f}s" if dur else "durasi tidak diketahui"
-        log(f"Video: {title} ({dur_txt})")
+        max_h = info.get("max_height")
+        dl_h = info.get("download_height")
+        qual_txt = ""
+        if max_h:
+            qual_txt = (f", kualitas max {max_h}p — download jadi "
+                        f"{dl_h or max_h}p")
+            if max_h < 1080:
+                qual_txt += (f" (video ini mentok {max_h}p, "
+                             "bukan salah tool)")
+        log(f"Video: {title} ({dur_txt}{qual_txt})")
         self.after(0, lambda: self.yt_info.config(
-            text=f"{title} — {dur_txt}"))
+            text=f"{title} — {dur_txt}{qual_txt}"))
         dl_dir = os.path.join(out_dir, "downloads")
         os.makedirs(dl_dir, exist_ok=True)
         template, expected = fu.download_target_path(dl_dir, title)
@@ -400,9 +433,18 @@ class App(tk.Tk):
                                    "login, atau YouTube memblokir IP ini.")
             dur = info["duration"]
             dur_txt = f"{dur:.0f}s" if dur else "durasi tidak diketahui"
+            max_h = info.get("max_height")
+            dl_h = info.get("download_height")
+            qual_txt = ""
+            if max_h:
+                qual_txt = (f", kualitas max {max_h}p — download jadi "
+                            f"{dl_h or max_h}p")
+                if max_h < 1080:
+                    qual_txt += (f" (video ini mentok {max_h}p, "
+                                 "bukan salah tool)")
             self.after(0, lambda: self.yt_info.config(
-                text=f"{info['title']} — {dur_txt}"))
-            self._log(f"Info: {info['title']} ({dur_txt})")
+                text=f"{info['title']} — {dur_txt}{qual_txt}"))
+            self._log(f"Info: {info['title']} ({dur_txt}{qual_txt})")
         except Exception as e:
             self._log(f"❌ GAGAL cek info: {e}")
             self.after(0, lambda e=e: messagebox.showerror("Gagal", str(e)))

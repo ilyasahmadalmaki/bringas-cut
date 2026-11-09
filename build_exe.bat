@@ -5,7 +5,8 @@ REM Syarat: Python 3.10+ sudah terinstall dan ada di PATH.
 REM Hasil: dist\BringasCut.exe
 REM Catatan: ffmpeg.exe + ffprobe.exe TIDAK ikut dibundel ke dalam .exe.
 REM Taruh ffmpeg.exe + ffprobe.exe di folder yang sama dengan .exe-nya,
-REM atau di PATH, seperti biasa.
+REM atau di PATH, seperti biasa. Logo (assets\bringas-cut.ico buat icon
+REM .exe + assets\bringas-cut-logo.png buat icon jendela) ikut dibundel.
 
 python --version >nul 2>&1
 if errorlevel 1 (
@@ -22,7 +23,7 @@ if errorlevel 1 (
   exit /b 1
 )
 
-pyinstaller --noconfirm --onefile --windowed --name BringasCut bringas_cut.py
+pyinstaller --noconfirm --onefile --windowed --name BringasCut --icon assets\bringas-cut.ico --add-data "assets\bringas-cut-logo.png;assets" bringas_cut.py
 if errorlevel 1 (
   echo Build gagal.
   pause

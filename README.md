@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/bringas-cut-logo.png" alt="Logo Bringas Cut" width="200"></p>
+
 ![BRINGAS CUT](assets/header.svg)
 
 ![Windows](https://img.shields.io/badge/Windows-10%2F11-0078D6)
@@ -53,8 +55,10 @@ source), atau **`build_exe.bat`** (build `.exe` saja, tanpa setup Python/ffmpeg)
    - **File lokal:** Browse 1 file video (`.mp4`, `.mov`, `.mkv`, `.avi`, `.webm`).
    - **Download dari YouTube:** tempel URL video (`youtube.com/watch`,
      `youtube.com/shorts/`, `youtu.be/`, `music.youtube.com`), klik
-     **Cek Info** buat lihat judul + durasi dulu, atau langsung
-     **⬇ Download**. Kualitas download: **1080p terbaik** — format
+     **Cek Info** buat lihat judul + durasi + **kualitas max video**
+     dulu (v1.3: mis. "kualitas max 240p — download jadi 240p", jadi
+     ketahuan sebelum download kalau videonya memang mentok rendah),
+     atau langsung **⬇ Download**. Kualitas download: **1080p terbaik** — format
      terbaik dengan tinggi ≤ 1080 (kalau sumbernya 4K, diambil 1080-nya;
      kalau sumber max 720p, diambil 720p), hasil akhir **wajib .mp4**.
      File hasil download tersimpan di `folder output/downloads/` dengan
@@ -262,6 +266,19 @@ gagal → error tail), alur lengkap fake-download → cincang 1 klip, dan
 **download YouTube beneran** di VM ini: video publik "Me at the zoo" (19 detik)
 judul + durasi terbaca, file `.mp4` hasil download ada, tinggi ≤ 1080, sumber
 punya audio. Total v1.2: **410 passed, 0 failed**.
+
+**v1.3: Cek Info tampilkan kualitas max + logo resmi** — `get_youtube_info`
+baca daftar format via `yt-dlp -J`
+(`_heights_from_formats`: max video + terbaik ≤1080p), GUI menampilkan
+"kualitas max Xp — download jadi Yp" plus catatan "video ini mentok Xp,
+bukan salah tool" kalau max < 1080p; fallback ke judul+durasi lama kalau
+JSON gagal. Tes: fake yt-dlp jawab `-J` (240p-only), 3 cek heights baru
+(4K → 2160/1080, 240-only → 240/240, tanpa video → None/None), tes
+integrasi YouTube beneran nambah cek max 240p buat 'Me at the zoo'.
+Logo resmi (gunting neon motong strip film) jadi icon jendela + icon
+`.exe` + tampil di atas README ini. Total di VM ini: **423 passed,
+0 failed** (tes integrasi YouTube beneran skip karena yt-dlp tidak ada
+di VM ini).
 
 ## Catatan v1.2
 

@@ -49,6 +49,11 @@ Locked spec (2026-11-08, user discussion):
   pesan error yang jelas. Satu video saja, BUKAN playlist.
   Peringatan ToS ada di GUI + README: download hanya untuk video
   milik sendiri / yang kamu punya hak pakainya.
+- v1.3 (2026-11-09): tombol Cek Info juga menampilkan kualitas MAX video
+  (dari daftar format yt-dlp -J) + kualitas yang bakal di-download (terbaik
+  <= 1080p), supaya ketahuan sebelum download kalau videonya
+  memang mentok rendah (mis. 'Me at the zoo' cuma 240p) — bukan
+  salah tool. Fallback ke judul+durasi lama kalau JSON gagal.
 """
 from __future__ import annotations
 
@@ -479,14 +484,76 @@ def _parse_duration_text(text: str) -> Optional[float]:
     return total if total > 0 else None
 
 
+def _heights_from_formats(formats) -> Tuple[Optional[int], Optional[int]]:
+    """(max_height, download_height) dari daftar format yt-dlp.
+
+    max_height = tinggi terbesar dari semua format VIDEO (audio-only
+    diabaikan — vcodec none). download_height = tinggi terbesar yang
+    <= 1080, yaitu yang bakal diambil format string YTDLP_FORMAT
+    (4K -> 1080, sumber 720p -> 720, 'Me at the zoo' -> 240).
+    (None, None) kalau tidak ada format video bertinggi.
+    """
+    heights = []
+    for f in (formats or []):
+        if not isinstance(f, dict):
+            continue
+        if (f.get("vcodec") or "none") in ("none", None):
+            continue
+        try:
+            h = int(f.get("height") or 0)
+        except (TypeError, ValueError):
+            continue
+        if h > 0:
+            heights.append(h)
+    if not heights:
+        return None, None
+    under = [h for h in heights if h <= 1080]
+    return max(heights), (max(under) if under else max(heights))
+
+
 def get_youtube_info(yt_dlp: str, url: str,
                      timeout: int = 60) -> Optional[dict]:
-    """Fetch a video's title + duration via yt-dlp (no download).
+    """Fetch a video's title + duration + max quality via yt-dlp (no download).
 
-    Returns {"title": str, "duration": float|None} or None on failure
-    (private / age-restricted / login-required / network error).
-    Never raises.
+    Returns {"title": str, "duration": float|None,
+             "max_height": int|None, "download_height": int|None}
+    or None on failure (private / age-restricted / login-required /
+    network error). Never raises.
+
+    max_height = kualitas tertinggi yang dimiliki video itu (dari
+    daftar format yt-dlp); download_height = yang bakal di-download
+    format string kita (terbaik <= 1080p). Kalau video aslinya cuma
+    240p (mis. 'Me at the zoo', upload 2005), keduanya 240 — jadi
+    user langsung tahu videonya yang mentok, bukan tool-nya.
+
+    Cara baca: yt-dlp -J (JSON lengkap) dulu; kalau JSON gagal
+    dibaca, fallback ke --get-title/--get-duration lama (judul +
+    durasi tetap dapat, tinggi jadi None).
     """
+    cmd = [yt_dlp, "--no-playlist",
+           "--extractor-args", YTDLP_EXTRACTOR_ARGS,
+           "-J", "--no-download", url]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace",
+                           timeout=timeout, **_no_window_kwargs())
+    except Exception:
+        r = None
+    if r is not None and r.returncode == 0 and (r.stdout or "").strip():
+        try:
+            data = json.loads(r.stdout)
+        except Exception:
+            data = None
+        if isinstance(data, dict) and data.get("title"):
+            max_h, dl_h = _heights_from_formats(data.get("formats"))
+            dur = data.get("duration")
+            try:
+                dur = float(dur) if dur is not None else None
+            except (TypeError, ValueError):
+                dur = None
+            return {"title": str(data["title"]), "duration": dur,
+                    "max_height": max_h, "download_height": dl_h}
+    # Fallback lama: judul + durasi saja, tanpa info kualitas.
     cmd = [yt_dlp, "--no-playlist",
            "--extractor-args", YTDLP_EXTRACTOR_ARGS,
            "--get-title", "--get-duration", "--no-download", url]
@@ -503,7 +570,8 @@ def get_youtube_info(yt_dlp: str, url: str,
         return None
     title = lines[0]
     duration = _parse_duration_text(lines[1]) if len(lines) > 1 else None
-    return {"title": title, "duration": duration}
+    return {"title": title, "duration": duration,
+            "max_height": None, "download_height": None}
 
 
 def sanitize_filename(name: str) -> str:
