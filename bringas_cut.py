@@ -14,6 +14,8 @@ YouTube nge-blok) + hasil download selalu .mp4 (remux kalau perlu).
 v1.5: pakai default yt-dlp (tanpa paksa client android — yang bikin
 mentok 360p) + format kecualikan "1080p Premium" (biar dapat 1080p
 HD biasa) + Cek Info nunjukin error asli yt-dlp kalau gagal.
+v1.6: --format-sort res,br — download 1080p bitrate tertinggi (bukan
+AV1 470 kbps yang dipilih sort default).
 
 Jalankan:  python bringas_cut.py
            (atau double-click run.bat di Windows)

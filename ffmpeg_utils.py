@@ -336,6 +336,14 @@ YTDLP_FORMAT = (
     "b[height<=1080][ext=mp4][format_note!*=?Premium]/"
     "b[height<=1080][format_note!*=?Premium]"
 )
+# Format sort (v1.6): resolusi dulu, lalu bitrate. Sort default yt-dlp
+# mengutamakan codec (av01 > vp9 > avc1) SEBELUM bitrate, jadi
+# "bestvideo" 1080p yang dipilih adalah AV1 470 kbps (itag 399) —
+# bitrate jelek, terbukti 2026-11-11 dari daftar format video Velvet
+# Room di PC user. Dengan --format-sort res,br, yang dipilih adalah
+# 1080p bitrate tertinggi yang bukan Premium (270, AVC 2221 kbps).
+# Dipakai di semua command yt-dlp (info + download) supaya konsisten.
+YTDLP_FORMAT_SORT = "res,br"
 # Player clients (v1.5): JANGAN dipaksa — pakai DEFAULT yt-dlp, sama
 # kayak ytDownloader (tidak ada --extractor-args sama sekali).
 # Bukti 2026-11-10 dari PC user (video Velvet Room 0tJB8EGKsgk):
@@ -474,6 +482,7 @@ def build_ytdlp_command(yt_dlp: str, url: str,
     user's login session — full 1080p formats + bot-check resistant.
     """
     return [yt_dlp, "--no-playlist",
+            "--format-sort", YTDLP_FORMAT_SORT,
             *cookies_args(cookies_browser),
             "-f", YTDLP_FORMAT,
             "--merge-output-format", "mp4",
@@ -578,6 +587,7 @@ def get_youtube_info(yt_dlp: str, url: str,
     durasi tetap dapat, tinggi jadi None).
     """
     cmd = [yt_dlp, "--no-playlist",
+           "--format-sort", YTDLP_FORMAT_SORT,
            *cookies_args(cookies_browser),
            "-J", "--no-download", url]
     err_j = ""
@@ -606,6 +616,7 @@ def get_youtube_info(yt_dlp: str, url: str,
         err_j = _stderr_tail(r.stderr) or _stderr_tail(r.stdout)
     # Fallback lama: judul + durasi saja, tanpa info kualitas.
     cmd = [yt_dlp, "--no-playlist",
+           "--format-sort", YTDLP_FORMAT_SORT,
            *cookies_args(cookies_browser),
            "--get-title", "--get-duration", "--no-download", url]
     try:

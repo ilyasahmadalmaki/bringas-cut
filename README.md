@@ -61,8 +61,9 @@ source), atau **`build_exe.bat`** (build `.exe` saja, tanpa setup Python/ffmpeg)
      atau langsung **⬇ Download**. Kualitas download: **1080p terbaik
      (HD biasa, bukan "1080p Premium")** — format terbaik dengan tinggi
      ≤ 1080 (kalau sumbernya 4K, diambil 1080-nya; kalau sumber max
-     720p, diambil 720p), hasil akhir **wajib .mp4**. v1.5 memakai
-     **default yt-dlp** (tanpa memaksa client) — sama kayak ytDownloader.
+     720p, diambil 720p), **bitrate tertinggi di resolusi itu** (v1.6),
+     hasil akhir **wajib .mp4**. v1.5 memakai **default yt-dlp** (tanpa
+     memaksa client) — sama kayak ytDownloader.
      File hasil download tersimpan di `folder output/downloads/` dengan
      nama = judul video, lalu otomatis jadi sumber potongan. Kalau klik
      **✂ POTONG** saat URL sudah ditempel tapi belum di-download,
@@ -207,6 +208,12 @@ tiap klip 3-8 detik, efek beda-beda, nama file acak kayak `a7k9x2q4m1.mp4`.
     (itag 616/235) — tanpa langganan Premium format itu gagal
     di-download, dan yt-dlp malah mengutamakannya (source_preference
     +100) kalau tidak difilter; target app adalah 1080p HD biasa.
+  - Format sort (v1.6): `--format-sort res,br` di semua command yt-dlp
+    (info + download) — resolusi dulu, lalu bitrate. Sort default yt-dlp
+    mengutamakan codec (av01 > vp9 > avc1) sebelum bitrate, jadi
+    "bestvideo" 1080p yang dipilih adalah AV1 470 kbps (itag 399);
+    dengan `res,br`, yang dipilih adalah 1080p bitrate tertinggi
+    (270, AVC 2221 kbps di video tes).
   - Player client (v1.5): **tidak ada `--extractor-args`** — pakai default
     yt-dlp, sama kayak ytDownloader. Dulu (v1.2–v1.4) dipaksa
     `android,web`, dan client android ternyata kena batasan SABR:
@@ -322,6 +329,28 @@ format mengandung filter Premium, selector yt-dlp offline (string lama
 pilih `616+140`, string baru pilih `137+140`, cuma-18 tetap `18`), info
 palsu gagal → dict error. Total di VM ini: **454 passed, 0 failed** (tes
 integrasi YouTube beneran skip karena yt-dlp tidak ada di VM ini).
+
+**v1.6: format sort bitrate tertinggi** — `--format-sort res,br` di semua
+command yt-dlp (download + Cek Info); tes: 4 cek baru — format-sort ada
+di command download + info, selector offline (sort default pilih
+`399+140`, sort `res,br` pilih `270+140`). Total di VM ini:
+**458 passed, 0 failed** (tes integrasi YouTube beneran skip karena
+yt-dlp tidak ada di VM ini).
+
+## Catatan v1.6
+
+- **Masalah (laporan user 2026-11-11):** "jelek banget bitrate nya" —
+  v1.5 download 1080p tapi bitrate-nya kecil. Penyebab: sort default
+  yt-dlp mengutamakan codec sebelum bitrate, jadi yang dipilih adalah
+  format 399 (AV1 1080p, cuma 470 kbps, ~10,6 MB buat video 3:10).
+  Terverifikasi offline dengan daftar format lengkap dari screenshot
+  `-F` user: sort default → `399+140`, sort `res,br` → `270+140`.
+- **Perbaikan:** `--format-sort res,br` — resolusi dulu (tetap mentok
+  1080p, tidak bocor ke 4K karena format string membatasi tinggi),
+  lalu bitrate tertinggi di resolusi itu. Di video Velvet Room:
+  270 (AVC 2221 kbps, ~50 MB) + audio m4a terbaik. Premium tetap
+  dikecualikan (v1.5), default yt-dlp tetap dipakai (v1.5), cookies
+  tetap opt-in (v1.4).
 
 ## Catatan v1.5
 

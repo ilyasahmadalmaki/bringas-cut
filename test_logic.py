@@ -306,6 +306,9 @@ def test_build_ytdlp_command():
           "--extractor-args" not in cmd, str(cmd))
     check("ytdlp cmd: TIDAK ada client android (yang mentok 360p)",
           not any("android" in a for a in cmd), str(cmd))
+    check("ytdlp cmd: --format-sort res,br (v1.6: bitrate tertinggi)",
+          "--format-sort" in cmd
+          and cmd[cmd.index("--format-sort") + 1] == "res,br", str(cmd))
     check("ytdlp cmd: format kecualikan Premium (bukan 1080p Premium)",
           "format_note!*=?Premium" in fmt, fmt)
     check("ytdlp cmd: tanpa cookies -> tidak ada flag --cookies",
@@ -394,6 +397,69 @@ def test_format_selector_excludes_premium():
     check("selector: cuma 18 -> tetap 18",
           [f.get('format_id') for f in out18] == ['18'],
           str([f.get('format_id') for f in out18]))
+
+
+def test_format_sort_picks_highest_bitrate():
+    """v1.6 (offline, pakai yt-dlp beneran kalau ada): dengan
+    --format-sort res,br, selector pilih 270+140 (AVC 2221 kbps),
+    bukan 399+140 (AV1 470 kbps) seperti sort default yt-dlp.
+    Skip kalau modul yt_dlp tidak ada — bukan gagal."""
+    try:
+        from yt_dlp import YoutubeDL
+    except ImportError:
+        print("SKIP  format sort bitrate: modul yt_dlp tidak ada")
+        return
+    import copy
+    fmts = [
+        {'format_id': '18', 'ext': 'mp4', 'height': 360, 'width': 640,
+         'vcodec': 'avc1.42001E', 'acodec': 'mp4a.40.2',
+         'format_note': '360p', 'tbr': 421, 'protocol': 'https',
+         'quality': 360, 'source_preference': 0, 'url': 'https://x/18'},
+        {'format_id': '140', 'ext': 'm4a', 'height': None, 'width': None,
+         'vcodec': 'none', 'acodec': 'mp4a.40.2', 'format_note': 'medium',
+         'tbr': 129, 'protocol': 'https', 'quality': -1,
+         'source_preference': 0, 'url': 'https://x/140'},
+        {'format_id': '137', 'ext': 'mp4', 'height': 1080, 'width': 1920,
+         'vcodec': 'avc1.640028', 'acodec': 'none', 'format_note': '1080p',
+         'tbr': 1230, 'protocol': 'https', 'quality': 1080,
+         'source_preference': 0, 'url': 'https://x/137'},
+        {'format_id': '270', 'ext': 'mp4', 'height': 1080, 'width': 1920,
+         'vcodec': 'avc1.640028', 'acodec': 'none', 'format_note': '1080p',
+         'tbr': 2221, 'protocol': 'm3u8', 'quality': 1080,
+         'source_preference': 0, 'url': 'https://x/270'},
+        {'format_id': '614', 'ext': 'mp4', 'height': 1080, 'width': 1920,
+         'vcodec': 'vp09.00.40.08', 'acodec': 'none',
+         'format_note': '1080p', 'tbr': 1401, 'protocol': 'm3u8',
+         'quality': 1080, 'source_preference': 0, 'url': 'https://x/614'},
+        {'format_id': '399', 'ext': 'mp4', 'height': 1080, 'width': 1920,
+         'vcodec': 'av01.0.08M.08', 'acodec': 'none',
+         'format_note': '1080p', 'tbr': 470, 'protocol': 'https',
+         'quality': 1080, 'source_preference': 0, 'url': 'https://x/399'},
+        {'format_id': '616', 'ext': 'mp4', 'height': 1080, 'width': 1920,
+         'vcodec': 'vp09.00.40.08', 'acodec': 'none',
+         'format_note': '1080p Premium', 'tbr': 3048, 'protocol': 'm3u8',
+         'quality': 1080, 'source_preference': 100, 'url': 'https://x/616'},
+    ]
+    sel = YoutubeDL({'quiet': True, 'no_warnings': True})
+    # Sort default -> 399+140 (premis masalah v1.6).
+    ydl_def = YoutubeDL({'quiet': True, 'no_warnings': True})
+    f1 = copy.deepcopy(fmts)
+    ydl_def.sort_formats({'id': 't', 'formats': f1})
+    out_def = ydl_def._select_formats(
+        f1, ydl_def.build_format_selector(fu.YTDLP_FORMAT))
+    check("format sort: default pilih 399+140 (470 kbps, yang jelek)",
+          [f.get('format_id') for f in out_def] == ['399+140'],
+          str([f.get('format_id') for f in out_def]))
+    # Sort res,br -> 270+140 (bitrate tertinggi 1080p non-Premium).
+    ydl_br = YoutubeDL({'quiet': True, 'no_warnings': True,
+                        'format_sort': ['res', 'br']})
+    f2 = copy.deepcopy(fmts)
+    ydl_br.sort_formats({'id': 't', 'formats': f2})
+    out_br = ydl_br._select_formats(
+        f2, ydl_br.build_format_selector(fu.YTDLP_FORMAT))
+    check("format sort: res,br pilih 270+140 (2221 kbps)",
+          [f.get('format_id') for f in out_br] == ['270+140'],
+          str([f.get('format_id') for f in out_br]))
 
 
 def test_parse_ytdlp_progress():
@@ -642,6 +708,10 @@ def test_get_youtube_info_cookies_fake(tmp):
         check("yt info cookies: --cookies-from-browser edge diteruskan",
               "--cookies-from-browser" in args
               and args[args.index("--cookies-from-browser") + 1] == "edge",
+              str(args))
+        check("yt info: --format-sort res,br diteruskan (v1.6)",
+              "--format-sort" in args
+              and args[args.index("--format-sort") + 1] == "res,br",
               str(args))
         # Tanpa cookies -> flag tidak ada.
         fu.get_youtube_info(fake, "https://youtu.be/FAKE1234567")
@@ -1189,6 +1259,7 @@ def main():
         test_cookies_args()
         test_build_ytdlp_command_cookies()
         test_format_selector_excludes_premium()
+        test_format_sort_picks_highest_bitrate()
         test_parse_ytdlp_progress()
         test_find_yt_dlp(tmp)
         test_sanitize_and_numbered_path(tmp)
