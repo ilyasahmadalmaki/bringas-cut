@@ -9,6 +9,8 @@ v1.2: sumber video 2 opsi — File lokal atau Download dari YouTube
 (via yt-dlp, kualitas 1080p terbaik, hasil .mp4).
 v1.3: Cek Info nunjukin kualitas max video sebelum download, plus
 logo resmi (icon jendela + icon .exe + README).
+v1.4: opsi cookies dari browser (opt-in, biar 1080p kebuka kalau
+YouTube nge-blok) + hasil download selalu .mp4 (remux kalau perlu).
 
 Jalankan:  python bringas_cut.py
            (atau double-click run.bat di Windows)
@@ -82,6 +84,12 @@ class App(tk.Tk):
         self.yt_url = tk.StringVar()
         self.yt_downloaded = tk.StringVar()  # path file hasil download
         self.ytdlp_path = tk.StringVar(value=fu.find_yt_dlp() or "yt-dlp")
+        # v1.4 — cookies dari browser, OPT-IN (default mati). Kalau nyala,
+        # yt-dlp jalan pakai sesi login browser -> YouTube ngasih format
+        # lengkap (1080p) + lolos bot-check. Dibaca lokal, tidak dikirim
+        # ke mana-mana.
+        self.use_cookies_var = tk.BooleanVar(value=False)
+        self.cookies_browser_var = tk.StringVar(value="chrome")
         self.min_dur = tk.StringVar(value="3")
         self.max_dur = tk.StringVar(value="8")
         self.intensity = tk.StringVar(value=fu.DEFAULT_INTENSITY)
@@ -188,10 +196,21 @@ class App(tk.Tk):
         ttk.Entry(row, textvariable=self.yt_url, width=70).pack(side="left", fill="x", expand=True)
         ttk.Button(row, text="⬇ Download", command=self._on_download_yt).pack(side="left", padx=4)
         ttk.Button(row, text="Cek Info", command=self._on_check_yt).pack(side="left", padx=4)
+        ck_row = ttk.Frame(vf); ck_row.pack(fill="x", pady=(2, 0))
+        ttk.Checkbutton(ck_row, text="Pakai cookies dari browser (biar 1080p kebuka kalau YouTube nge-blok)",
+                        variable=self.use_cookies_var,
+                        command=self._refresh_cookies_row).pack(side="left")
+        self.cookies_browser_combo = ttk.Combobox(
+            ck_row, textvariable=self.cookies_browser_var,
+            values=list(fu.YTDLP_COOKIE_BROWSERS), state="readonly", width=10)
+        self.cookies_browser_combo.pack(side="left", padx=4)
+        self._refresh_cookies_row()
+        tk.Label(vf, text="Cookies dibaca lokal oleh yt-dlp dari browser lo — tidak dikirim ke mana-mana. Tanpa cookies: video private / age-restricted tidak bisa di-download; dengan cookies (login di browser): bisa, kalau akun lo punya akses.",
+                 bg=PANEL, fg=MUTED, wraplength=900, justify="left").pack(anchor="w")
         self.yt_info = tk.Label(vf, text="Tempel URL video YouTube (watch / shorts / youtu.be), lalu Download.",
                                 bg=PANEL, fg=MUTED, anchor="w")
         self.yt_info.pack(fill="x", pady=2)
-        tk.Label(vf, text="Download hanya untuk video milik sendiri / yang kamu punya hak pakainya. Download dari YouTube dapat melanggar Ketentuan Layanan YouTube. Satu video saja, bukan playlist; tanpa login — video private / age-restricted tidak bisa di-download.",
+        tk.Label(vf, text="Download hanya untuk video milik sendiri / yang kamu punya hak pakainya. Download dari YouTube dapat melanggar Ketentuan Layanan YouTube. Satu video saja, bukan playlist.",
                  bg=PANEL, fg=MUTED, wraplength=900, justify="left").pack(anchor="w")
         self.video_info = tk.Label(vf, text="Belum ada video dipilih.",
                                    bg=PANEL, fg=MUTED, anchor="w")
@@ -351,6 +370,21 @@ class App(tk.Tk):
             self.ytdlp_label.config(
                 text="yt-dlp: TIDAK ketemu — jalankan setup-1-klik.bat lagi untuk download yt-dlp.exe")
 
+    def _cookies_browser(self) -> Optional[str]:
+        """Nama browser buat --cookies-from-browser, atau None kalau
+        checkbox cookies mati (v1.4, opt-in)."""
+        if not self.use_cookies_var.get():
+            return None
+        return self.cookies_browser_var.get()
+
+    def _refresh_cookies_row(self):
+        """Pilih browser cuma bisa diubah kalau checkbox cookies nyala."""
+        state = "readonly" if self.use_cookies_var.get() else "disabled"
+        try:
+            self.cookies_browser_combo.config(state=state)
+        except Exception:
+            pass
+
     def _download_yt_sync(self, url: str, out_dir: str) -> str:
         """Download 1 video YouTube (blocking, dipanggil dari worker
         thread): cek info dulu, lalu download ke <out_dir>/downloads.
@@ -365,7 +399,10 @@ class App(tk.Tk):
             raise RuntimeError("yt-dlp tidak ketemu — jalankan setup-1-klik.bat "
                                "lagi untuk download yt-dlp.exe.")
         log(f"Download YouTube: {url}")
-        info = fu.get_youtube_info(ytdlp, url)
+        cookies = self._cookies_browser()
+        if cookies:
+            log(f"  cookies: dari browser {cookies} (opt-in)")
+        info = fu.get_youtube_info(ytdlp, url, cookies_browser=cookies)
         if info is None:
             raise RuntimeError("yt-dlp gagal membaca info video — mungkin video "
                                "private / age-restricted / butuh login, atau "
@@ -396,7 +433,8 @@ class App(tk.Tk):
             last_pct["v"] = pct
 
         ok, result = fu.download_youtube_video(
-            ytdlp, url, template, expected, log=log, progress_cb=_progress)
+            ytdlp, url, template, expected, log=log, progress_cb=_progress,
+            cookies_browser=cookies)
         if not ok:
             raise RuntimeError(f"Download YouTube gagal:\n{result}")
         self.yt_downloaded.set(result)
@@ -426,7 +464,10 @@ class App(tk.Tk):
     def _check_yt_worker(self, url: str, ytdlp: str):
         try:
             self._log(f"Cek info video: {url}")
-            info = fu.get_youtube_info(ytdlp, url)
+            cookies = self._cookies_browser()
+            if cookies:
+                self._log(f"  cookies: dari browser {cookies} (opt-in)")
+            info = fu.get_youtube_info(ytdlp, url, cookies_browser=cookies)
             if info is None:
                 raise RuntimeError("yt-dlp gagal membaca info video — mungkin "
                                    "video private / age-restricted / butuh "

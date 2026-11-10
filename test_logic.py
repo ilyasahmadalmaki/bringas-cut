@@ -304,6 +304,45 @@ def test_build_ytdlp_command():
           cmd[cmd.index("-o") + 1] == "/tmp/dl/Judul.%(ext)s", str(cmd))
     check("ytdlp cmd: extractor-args android dulu, web fallback",
           "android,web" in cmd[cmd.index("--extractor-args") + 1], str(cmd))
+    check("ytdlp cmd: tanpa cookies -> tidak ada flag --cookies",
+          not any(a.startswith("--cookies") for a in cmd), str(cmd))
+
+
+def test_cookies_args():
+    check("cookies: None -> []",
+          fu.cookies_args(None) == [])
+    check("cookies: string kosong -> []",
+          fu.cookies_args("") == [])
+    check("cookies: chrome -> --cookies-from-browser chrome",
+          fu.cookies_args("chrome") == ["--cookies-from-browser", "chrome"])
+    check("cookies: CHROME (kapital) -> dinormalisasi ke chrome",
+          fu.cookies_args("CHROME") == ["--cookies-from-browser", "chrome"])
+    check("cookies: ' edge ' (spasi) -> dinormalisasi ke edge",
+          fu.cookies_args(" edge ") == ["--cookies-from-browser", "edge"])
+    check("cookies: browser tidak dikenal -> [] (bukan error)",
+          fu.cookies_args("safari") == [])
+    check("cookies: semua browser GUI didukung",
+          all(fu.cookies_args(b) == ["--cookies-from-browser", b]
+              for b in fu.YTDLP_COOKIE_BROWSERS),
+          str(fu.YTDLP_COOKIE_BROWSERS))
+
+
+def test_build_ytdlp_command_cookies():
+    cmd = fu.build_ytdlp_command("/usr/bin/yt-dlp",
+                                 "https://youtu.be/jNQXAC9IVRw",
+                                 "/tmp/dl/Judul.%(ext)s",
+                                 cookies_browser="edge")
+    check("ytdlp cmd cookies: flag + browser ada",
+          "--cookies-from-browser" in cmd
+          and cmd[cmd.index("--cookies-from-browser") + 1] == "edge",
+          str(cmd))
+    check("ytdlp cmd cookies: flag sebelum URL",
+          cmd.index("--cookies-from-browser") < len(cmd) - 1
+          and cmd[-1].startswith("https://"), str(cmd))
+    check("ytdlp cmd cookies: browser tidak dikenal -> flag hilang",
+          "--cookies-from-browser" not in fu.build_ytdlp_command(
+              "/usr/bin/yt-dlp", "https://youtu.be/jNQXAC9IVRw",
+              "/tmp/dl/Judul.%(ext)s", cookies_browser="safari"))
 
 
 def test_parse_ytdlp_progress():
@@ -407,6 +446,12 @@ _FAKE_YTDLP = '''#!/usr/bin/env python3
 import os, shutil, sys
 
 args = sys.argv[1:]
+# Rekam argv (buat tes cookies): path file dari env FAKE_YT_ARGS_FILE.
+_args_file = os.environ.get("FAKE_YT_ARGS_FILE", "")
+if _args_file:
+    import json as _json
+    with open(_args_file, "w") as _f:
+        _json.dump(args, _f)
 if os.environ.get("FAKE_YT_FAIL") == "1":
     print("ERROR: Video ini private", file=sys.stderr)
     sys.exit(1)
@@ -425,7 +470,9 @@ if "--get-title" in args:
     sys.exit(0)
 if "-o" in args:
     tmpl = args[args.index("-o") + 1]
-    out = tmpl.replace("%(ext)s", "mp4")
+    # FAKE_YT_EXT: pura-pura yt-dlp menulis container lain (mkv/webm).
+    ext = os.environ.get("FAKE_YT_EXT", "mp4")
+    out = tmpl.replace("%(ext)s", ext)
     print("[download]  50.0% of  1.00MiB at  1.00MiB/s ETA 00:00")
     print("[download] 100.0% of  1.00MiB at  1.00MiB/s ETA 00:00")
     print("[download] Destination: " + out)
@@ -520,6 +567,143 @@ def test_download_youtube_fake(tmp):
     finally:
         os.environ.pop("FAKE_YT_SRC", None)
         os.environ.pop("FAKE_YT_FAIL", None)
+
+
+def _read_fake_args(path):
+    import json
+    return json.loads(Path(path).read_text())
+
+
+def test_get_youtube_info_cookies_fake(tmp):
+    fake = _make_fake_ytdlp(tmp)
+    args_file = os.path.join(tmp, "args-info.json")
+    os.environ["FAKE_YT_ARGS_FILE"] = args_file
+    try:
+        info = fu.get_youtube_info(fake, "https://youtu.be/FAKE1234567",
+                                   cookies_browser="edge")
+        check("yt info cookies: info tetap terbaca",
+              info is not None and info["title"] == "Video Tes Palsu",
+              str(info))
+        args = _read_fake_args(args_file)
+        check("yt info cookies: --cookies-from-browser edge diteruskan",
+              "--cookies-from-browser" in args
+              and args[args.index("--cookies-from-browser") + 1] == "edge",
+              str(args))
+        # Tanpa cookies -> flag tidak ada.
+        fu.get_youtube_info(fake, "https://youtu.be/FAKE1234567")
+        args2 = _read_fake_args(args_file)
+        check("yt info tanpa cookies: flag tidak diteruskan",
+              not any(a.startswith("--cookies") for a in args2), str(args2))
+    finally:
+        os.environ.pop("FAKE_YT_ARGS_FILE", None)
+
+
+def test_download_youtube_cookies_fake(tmp):
+    fake = _make_fake_ytdlp(tmp)
+    args_file = os.path.join(tmp, "args-dl.json")
+    dl = os.path.join(tmp, "downloads")
+    os.makedirs(dl, exist_ok=True)
+    tmpl, exp = fu.download_target_path(dl, "Video Cookies")
+    os.environ["FAKE_YT_ARGS_FILE"] = args_file
+    try:
+        ok, _result = fu.download_youtube_video(
+            fake, "https://youtu.be/FAKE1234567", tmpl, exp,
+            log=lambda m: None, cookies_browser="chrome")
+        args = _read_fake_args(args_file)
+        check("download cookies: ok + flag chrome diteruskan",
+              ok and "--cookies-from-browser" in args
+              and args[args.index("--cookies-from-browser") + 1] == "chrome",
+              f"ok={ok} args={args}")
+    finally:
+        os.environ.pop("FAKE_YT_ARGS_FILE", None)
+
+
+def test_remux_to_mp4(tmp):
+    ff = fu.find_ffmpeg()
+    mkv = os.path.join(tmp, "asli.mkv")
+    r = subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i",
+         "testsrc=size=320x240:rate=30:d=2",
+         "-f", "lavfi", "-i", "sine=frequency=440:d=2",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+         "-shortest", mkv], capture_output=True, text=True)
+    if r.returncode != 0:
+        print("SKIP  remux: ffmpeg gagal bikin mkv")
+        return
+    mp4 = os.path.join(tmp, "hasil.mp4")
+    check("remux mkv->mp4: True + file .mp4 ada",
+          fu.remux_to_mp4(ff, mkv, mp4) and os.path.isfile(mp4)
+          and os.path.getsize(mp4) > 0)
+    try:
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "stream=codec_type",
+             "-of", "csv=p=0", mp4], capture_output=True, text=True)
+        check("remux mkv->mp4: video + audio ikut ke-remux",
+              sorted(probe.stdout.split()) == ["audio", "video"],
+              probe.stdout)
+    except FileNotFoundError:
+        print("SKIP  remux: ffprobe tidak ada")
+    # Gagal: sumber tidak ada -> False, dst tidak dibuat.
+    mp4_b = os.path.join(tmp, "tidak-ada.mp4")
+    check("remux: src hilang -> False + dst tidak dibuat",
+          fu.remux_to_mp4(ff, os.path.join(tmp, "hilang.mkv"), mp4_b) is False
+          and not os.path.exists(mp4_b))
+    # Gagal: ffmpeg tidak ada -> False.
+    check("remux: ffmpeg bogus -> False",
+          fu.remux_to_mp4("ffmpeg-tidak-ada-xyz", mkv,
+                          os.path.join(tmp, "x.mp4")) is False)
+    # Gagal: src sampah (bukan video) -> False.
+    sampah = os.path.join(tmp, "sampah.mkv")
+    Path(sampah).write_bytes(b"bukan-video")
+    check("remux: src sampah -> False",
+          fu.remux_to_mp4(ff, sampah, os.path.join(tmp, "y.mp4")) is False)
+
+
+def test_download_youtube_remux_fake(tmp):
+    fake = _make_fake_ytdlp(tmp)
+    src = os.path.join(tmp, "src.mp4")
+    r = subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i",
+         "testsrc=size=320x240:rate=30:d=2",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", src],
+        capture_output=True, text=True)
+    if r.returncode != 0:
+        print("SKIP  download remux: ffmpeg gagal bikin src")
+        return
+    dl = os.path.join(tmp, "downloads")
+    os.makedirs(dl, exist_ok=True)
+    os.environ["FAKE_YT_SRC"] = src
+    os.environ["FAKE_YT_EXT"] = "mkv"
+    try:
+        tmpl, exp = fu.download_target_path(dl, "Video Remux")
+        logs = []
+        ok, result = fu.download_youtube_video(
+            fake, "https://youtu.be/FAKE1234567", tmpl, exp,
+            log=lambda m: logs.append(m))
+        mkv_path = os.path.splitext(exp)[0] + ".mkv"
+        check("download remux: ok + hasil akhir .mp4 (bukan .mkv)",
+              ok and result == exp, f"ok={ok} result={result}")
+        check("download remux: file .mp4 ada + tidak kosong",
+              os.path.isfile(exp) and os.path.getsize(exp) > 0)
+        check("download remux: file .mkv sementara dihapus",
+              not os.path.exists(mkv_path))
+        check("download remux: log nyebut remux",
+              any("remux" in m for m in logs), str(logs))
+        # Remux gagal (isi sampah) -> download tetap sukses pakai .mkv.
+        os.environ.pop("FAKE_YT_SRC", None)
+        tmpl2, exp2 = fu.download_target_path(dl, "Video Sampah")
+        ok2, result2 = fu.download_youtube_video(
+            fake, "https://youtu.be/FAKE1234567", tmpl2, exp2,
+            log=lambda m: None)
+        mkv2 = os.path.splitext(exp2)[0] + ".mkv"
+        check("download remux gagal: tetap ok + pakai .mkv apa adanya",
+              ok2 and result2 == mkv2 and os.path.isfile(mkv2),
+              f"ok={ok2} result={result2}")
+        check("download remux gagal: .mp4 tidak dibuat",
+              not os.path.exists(exp2))
+    finally:
+        os.environ.pop("FAKE_YT_SRC", None)
+        os.environ.pop("FAKE_YT_EXT", None)
 
 
 def test_gpu_detection():
@@ -948,6 +1132,8 @@ def main():
         test_is_youtube_url()
         test_youtube_url_problem()
         test_build_ytdlp_command()
+        test_cookies_args()
+        test_build_ytdlp_command_cookies()
         test_parse_ytdlp_progress()
         test_find_yt_dlp(tmp)
         test_sanitize_and_numbered_path(tmp)
@@ -955,6 +1141,10 @@ def main():
         test_get_youtube_info_fake(tmp)
         test_heights_from_formats()
         test_download_youtube_fake(tmp)
+        test_get_youtube_info_cookies_fake(tmp)
+        test_download_youtube_cookies_fake(tmp)
+        test_remux_to_mp4(tmp)
+        test_download_youtube_remux_fake(tmp)
         test_gpu_detection()
         test_video_encoder_args()
         test_detect_gpu_encoder_live()

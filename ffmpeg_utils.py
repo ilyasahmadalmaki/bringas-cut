@@ -338,6 +338,15 @@ YTDLP_FORMAT = (
 # on that network. On a normal PC the web client should offer 1080p.
 YTDLP_EXTRACTOR_ARGS = "youtube:player_client=android,web"
 
+# Cookies (v1.4): opt-in, dibaca LOKAL oleh yt-dlp dari browser user
+# (--cookies-from-browser). Dengan sesi login, YouTube ngasih format
+# lengkap (1080p) + lolos bot-check — ini yang bikin downloader kayak
+# ytDownloader bisa 1080p. Default MATI: tanpa cookies, perilaku sama
+# kayak v1.3. Cookies TIDAK pernah dikirim ke mana-mana selain ke
+# yt-dlp di mesin yang sama.
+YTDLP_COOKIE_BROWSERS = ("chrome", "edge", "firefox", "brave",
+                         "opera", "vivaldi")
+
 _YT_HOSTS = {
     "youtube.com", "www.youtube.com", "m.youtube.com",
     "music.youtube.com", "www.music.youtube.com",
@@ -426,18 +435,37 @@ def find_yt_dlp(explicit: Optional[str] = None) -> Optional[str]:
     return None
 
 
+def cookies_args(cookies_browser: Optional[str] = None) -> List[str]:
+    """Argumen --cookies-from-browser buat yt-dlp, atau [] kalau mati.
+
+    Nama browser dinormalisasi (lowercase + strip); nama yang tidak
+    dikenal -> [] (bukan error) supaya pilihan yang salah tidak
+    merusak download — download jalan tanpa cookies kayak v1.3.
+    """
+    if not cookies_browser:
+        return []
+    name = str(cookies_browser).strip().lower()
+    if name not in YTDLP_COOKIE_BROWSERS:
+        return []
+    return ["--cookies-from-browser", name]
+
+
 def build_ytdlp_command(yt_dlp: str, url: str,
-                        output_template: str) -> List[str]:
+                        output_template: str,
+                        cookies_browser: Optional[str] = None) -> List[str]:
     """yt-dlp command for one video at best-1080p, output to .mp4.
 
     `output_template` must contain %(ext)s (e.g. ".../Judul.%(ext)s").
     --no-playlist: a playlist URL with v= downloads just that video.
     --newline: one progress line per update, parseable by
     parse_ytdlp_progress. The extractor args put the android client
-    first (bot-check resistant) with web as fallback.
+    first (bot-check resistant) with web as fallback. `cookies_browser`
+    (v1.4, opt-in) adds --cookies-from-browser so yt-dlp runs with the
+    user's login session — full 1080p formats + bot-check resistant.
     """
     return [yt_dlp, "--no-playlist",
             "--extractor-args", YTDLP_EXTRACTOR_ARGS,
+            *cookies_args(cookies_browser),
             "-f", YTDLP_FORMAT,
             "--merge-output-format", "mp4",
             "--newline",
@@ -512,7 +540,8 @@ def _heights_from_formats(formats) -> Tuple[Optional[int], Optional[int]]:
 
 
 def get_youtube_info(yt_dlp: str, url: str,
-                     timeout: int = 60) -> Optional[dict]:
+                     timeout: int = 60,
+                     cookies_browser: Optional[str] = None) -> Optional[dict]:
     """Fetch a video's title + duration + max quality via yt-dlp (no download).
 
     Returns {"title": str, "duration": float|None,
@@ -532,6 +561,7 @@ def get_youtube_info(yt_dlp: str, url: str,
     """
     cmd = [yt_dlp, "--no-playlist",
            "--extractor-args", YTDLP_EXTRACTOR_ARGS,
+           *cookies_args(cookies_browser),
            "-J", "--no-download", url]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True,
@@ -556,6 +586,7 @@ def get_youtube_info(yt_dlp: str, url: str,
     # Fallback lama: judul + durasi saja, tanpa info kualitas.
     cmd = [yt_dlp, "--no-playlist",
            "--extractor-args", YTDLP_EXTRACTOR_ARGS,
+           *cookies_args(cookies_browser),
            "--get-title", "--get-duration", "--no-download", url]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True,
@@ -615,9 +646,35 @@ def download_target_path(folder: str, title: str) -> Tuple[str, str]:
     return template, expected
 
 
+def remux_to_mp4(ffmpeg: str, src: str, dst: str,
+                 log: LogFn = _noop_log) -> bool:
+    """Remux src (mis. .mkv/.webm) ke dst .mp4 TANPA re-encode (-c copy).
+
+    Dipakai v1.4 supaya hasil download selalu .mp4 sesuai spek, walau
+    yt-dlp menulis container lain. True kalau dst .mp4 ada + tidak
+    kosong; False kalau ffmpeg tidak ada / gagal (file asli dibiarkan
+    utuh — caller yang memutuskan). Never raises.
+    """
+    if not ffmpeg or not os.path.isfile(src):
+        return False
+    try:
+        r = subprocess.run(
+            [ffmpeg, "-y", "-i", src, "-map", "0", "-c", "copy", dst],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=600, **_no_window_kwargs())
+    except Exception as e:
+        log(f"  remux ke .mp4 gagal: {e}")
+        return False
+    if r.returncode == 0 and os.path.isfile(dst) and os.path.getsize(dst) > 0:
+        return True
+    log(f"  remux ke .mp4 gagal (ffmpeg exit {r.returncode})")
+    return False
+
+
 def download_youtube_video(yt_dlp: str, url: str, output_template: str,
                            expected_path: str, log: LogFn = _noop_log,
-                           progress_cb: Optional[Callable[[float], None]] = None
+                           progress_cb: Optional[Callable[[float], None]] = None,
+                           cookies_browser: Optional[str] = None
                            ) -> Tuple[bool, Optional[str]]:
     """Download one YouTube video with yt-dlp (streaming, for progress).
 
@@ -629,7 +686,8 @@ def download_youtube_video(yt_dlp: str, url: str, output_template: str,
     where error_tail is the last few non-empty output lines.
     Never raises.
     """
-    cmd = build_ytdlp_command(yt_dlp, url, output_template)
+    cmd = build_ytdlp_command(yt_dlp, url, output_template,
+                              cookies_browser=cookies_browser)
     log("$ " + " ".join(cmd))
     tail: List[str] = []
     last_reported = -100.0
@@ -675,6 +733,20 @@ def download_youtube_video(yt_dlp: str, url: str, output_template: str,
     for ext in (".mp4", ".mkv", ".webm", ".m4v"):
         cand = stem + ext
         if os.path.isfile(cand) and os.path.getsize(cand) > 0:
+            if os.path.splitext(cand)[1].lower() == ".mp4":
+                return True, cand
+            # v1.4: hasil akhir wajib .mp4 — remux tanpa re-encode;
+            # kalau remux gagal, pakai file aslinya (download tetap
+            # jalan, bukan gagal) + peringatan di log.
+            if remux_to_mp4(find_ffmpeg(), cand, expected_path, log):
+                try:
+                    os.remove(cand)
+                except OSError:
+                    pass
+                log(f"  output di-remux ke .mp4: {expected_path}")
+                return True, expected_path
+            log(f"  peringatan: remux ke .mp4 gagal, pakai {cand} "
+                "apa adanya")
             return True, cand
     return False, "yt-dlp selesai tapi file output tidak ketemu."
 

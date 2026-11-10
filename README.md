@@ -65,8 +65,14 @@ source), atau **`build_exe.bat`** (build `.exe` saja, tanpa setup Python/ffmpeg)
      nama = judul video, lalu otomatis jadi sumber potongan. Kalau klik
      **✂ POTONG** saat URL sudah ditempel tapi belum di-download,
      download jalan dulu otomatis baru cincang.
-   - Satu video saja, **bukan playlist**. Tanpa login — video private /
-     age-restricted tidak bisa di-download.
+   - Satu video saja, **bukan playlist**. **Cookies dari browser (v1.4,
+     opt-in):** kalau YouTube cuma ngasih 360p / nge-blok (SABR, bot-check),
+     centang "Pakai cookies dari browser" lalu pilih browser lo (Chrome /
+     Edge / Firefox / Brave / Opera / Vivaldi). yt-dlp jalan pakai sesi
+     login browser lo — YouTube ngasih format lengkap sampai 1080p. Default
+     mati; cookies dibaca lokal oleh yt-dlp, tidak dikirim ke mana-mana.
+     Dengan cookies, video private / age-restricted bisa di-download kalau
+     akun lo punya akses; tanpa cookies tidak bisa.
    - ⚠️ **Download hanya untuk video milik sendiri / yang kamu punya hak
      pakainya.** Download dari YouTube dapat melanggar Ketentuan Layanan
      YouTube.
@@ -98,8 +104,11 @@ tiap klip 3-8 detik, efek beda-beda, nama file acak kayak `a7k9x2q4m1.mp4`.
   tersimpan di `folder output/downloads/` (nama = judul video, anti-timpa
   gaya `(1)`, `(2)`). yt-dlp dicari di sebelah aplikasi dulu, lalu di PATH;
   kalau tidak ketemu, GUI menyuruh jalankan `setup-1-klik.bat` lagi —
-  yt-dlp tidak pernah di-download diam-diam saat render. **Tidak didukung:**
-  playlist, login/cookies, video private / age-restricted, live.
+  yt-dlp tidak pernah di-download diam-diam saat render. **Cookies dari
+  browser (v1.4, opt-in):** checkbox + pilih browser — yt-dlp pakai
+  `--cookies-from-browser` biar YouTube ngasih format 1080p lengkap saat
+  tanpa cookies cuma dapat 360p (SABR / bot-check). **Tidak didukung:**
+  playlist, live, video private / age-restricted tanpa cookies.
 - **Cincang acak:** durasi tiap klip random uniform di [Min, Max].
 - **Sisa akhir digabung:** kalau sisa di ujung video < Min, sisa itu digabung
   ke klip terakhir (klip terakhir bisa sampai Max + Min). Tidak pernah ada
@@ -201,6 +210,13 @@ tiap klip 3-8 detik, efek beda-beda, nama file acak kayak `a7k9x2q4m1.mp4`.
     diuji cuma dapat 360p) — cap ≤1080 tetap berlaku, itu yang terbaik
     yang *tersedia* di jaringan itu. Di PC rumahan biasa, client web
     seharusnya menyediakan 1080p.
+  - **Cookies (v1.4, opt-in):** `cookies_args` + `--cookies-from-browser
+    <browser>` (chrome / edge / firefox / brave / opera / vivaldi) ke Cek
+    Info dan download — dengan sesi login, YouTube ngasih format lengkap
+    sampai 1080p walau tanpa cookies cuma dapat 360p (SABR / bot-check).
+  - **Hasil selalu .mp4 (v1.4):** kalau yt-dlp menulis `.mkv`/`.webm`,
+    `remux_to_mp4` me-remux ke `.mp4` tanpa re-encode (`-c copy`); gagal
+    remux → file aslinya dipakai + peringatan di log.
   - Nama file download = judul video yang di-sanitize (karakter ilegal →
     `_`, spasi → `_`, max 120 char) + `.mp4`, di `folder output/downloads/`,
     anti-timpa `(1)`, `(2)`. Template yt-dlp `Judul.%(ext)s` dipakai supaya
@@ -280,6 +296,36 @@ Logo resmi (gunting neon motong strip film) jadi icon jendela + icon
 0 failed** (tes integrasi YouTube beneran skip karena yt-dlp tidak ada
 di VM ini).
 
+**v1.4: cookies dari browser + hasil download selalu .mp4** — checkbox
+cookies (default mati) + pilih browser, diteruskan sebagai
+`--cookies-from-browser` ke Cek Info dan download (`cookies_args`:
+normalisasi nama, browser tidak dikenal → tanpa cookies, bukan error).
+Hasil download yang bukan `.mp4` (mis. `.mkv`/`.webm`) di-remux ke `.mp4`
+tanpa re-encode (`remux_to_mp4`, `-c copy`); kalau remux gagal, file
+aslinya tetap dipakai + peringatan di log. Tes: 26 cek baru — cookies
+(command / info palsu / download palsu), remux mkv→mp4 beneran (video +
+audio ikut), remux gagal (src hilang / ffmpeg bogus / src sampah), dan
+download palsu .mkv → hasil akhir `.mp4` (file `.mkv` dihapus) + fallback
+remux-gagal. Total di VM ini: **449 passed, 0 failed** (tes integrasi
+YouTube beneran skip karena yt-dlp tidak ada di VM ini).
+
+## Catatan v1.4
+
+- **Kenapa 360p, kenapa cookies:** YouTube ke IP yang ke-blok cuma ngasih
+  format rendah lewat client Android (SABR) dan client Web gagal (429 /
+  bot-check / PO token) — format selector sebagus apa pun tidak bisa
+  mengambil 1080p kalau daftar formatnya cuma sampai 360p. Cookies dari
+  browser bikin yt-dlp jalan dengan sesi login, jadi YouTube ngasih
+  format lengkap. Cara ini sama dengan yang dipakai downloader populer
+  ytDownloader (10,6k stars) — kodenya tidak dicopas (lisensi beda:
+  ytDownloader GPL-3.0, repo ini MIT), idenya yang dipakai.
+- **Hasil download selalu .mp4:** kalau yt-dlp menulis `.mkv`/`.webm`,
+  app me-remux ke `.mp4` tanpa re-encode (kualitas tidak turun).
+  Kalau remux gagal, file aslinya tetap dipakai — download tidak
+  digagalkan cuma gara-gara container.
+- Spek lain tidak berubah: satu video, bukan playlist, 1080p terbaik,
+  tanpa login/cookies kalau checkbox mati.
+
 ## Catatan v1.2
 
 - Sumber video sekarang 2 opsi: File lokal (perilaku lama, tidak berubah) dan
@@ -290,9 +336,9 @@ di VM ini).
 - yt-dlp **tidak** dibundel ke repo (sama kayak ffmpeg) — `setup-1-klik.bat`
   download `yt-dlp.exe` dari GitHub releases. Kalau yt-dlp tidak ketemu, GUI
   menampilkan pesan jelas, bukan crash.
-- **Yang tidak didukung:** playlist, login/cookies, video private /
-  age-restricted, live. Video yang butuh login akan gagal dengan pesan error
-  yt-dlp apa adanya di log.
+- **Yang tidak didukung:** playlist, live. Video private / age-restricted
+  butuh cookies dari browser (v1.4); tanpa cookies akan gagal dengan pesan
+  error yt-dlp apa adanya di log.
 - **Catatan jaringan (jujur):** dari VM ini (IP proxy bersama), client web
   YouTube kena HTTP 429 / bot-check, jadi download memakai client android
   sebagai fallback — dan client android bisa kena batasan SABR yang
