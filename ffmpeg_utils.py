@@ -319,24 +319,33 @@ def video_encoder_args(encoder: Optional[str] = None) -> List[str]:
 # YouTube download via yt-dlp (v1.2)
 # --------------------------------------------------------------------------
 
-# Quality: BEST 1080p. The format string picks the best video with
-# height <= 1080 (a 4K source gives its 1080p stream, never 4K; a
-# 720p-max source gives 720p — the best that exists at/below 1080p)
-# + best audio, merged to .mp4. Never above 1080p, never .webm/.mkv.
+# Quality: BEST 1080p (biasa, BUKAN Premium). The format string picks
+# the best video with height <= 1080 (a 4K source gives its 1080p
+# stream, never 4K; a 720p-max source gives 720p — the best that
+# exists at/below 1080p) + best audio, merged to .mp4. Never above
+# 1080p, never .webm/.mkv.
+# [format_note!*=?Premium] di tiap pilihan video: kecualikan format
+# Premium (itag 616/235, "1080p Premium") — tanpa langganan Premium
+# format itu gagal di-download, dan yt-dlp malah mengutamakannya
+# (source_preference +100) kalau tidak difilter. Terverifikasi offline
+# 2026-11-10 (selector yt-dlp 2026.10.26): string lama pilih 616+140,
+# string ini pilih 137+140 (1080p HD biasa + audio m4a terbaik).
 YTDLP_FORMAT = (
-    "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/"
-    "bv*[height<=1080]+ba/"
-    "b[height<=1080][ext=mp4]/b[height<=1080]"
+    "bv*[height<=1080][ext=mp4][format_note!*=?Premium]+ba[ext=m4a]/"
+    "bv*[height<=1080][format_note!*=?Premium]+ba/"
+    "b[height<=1080][ext=mp4][format_note!*=?Premium]/"
+    "b[height<=1080][format_note!*=?Premium]"
 )
-# Player clients, in order: android first — it still works on IPs that
-# get bot-checked/429 on the web client (verified 2026-11-09 from this
-# VM: web client 429s on every request, android returns metadata and
-# downloads fine); web as fallback for full format lists on normal
-# residential IPs. NOTE: on a bot-checked IP the android client may be
-# SABR-limited and only offer lower heights (e.g. 360p for an old
-# video) — the <=1080 cap still holds, it is just the best AVAILABLE
-# on that network. On a normal PC the web client should offer 1080p.
-YTDLP_EXTRACTOR_ARGS = "youtube:player_client=android,web"
+# Player clients (v1.5): JANGAN dipaksa — pakai DEFAULT yt-dlp, sama
+# kayak ytDownloader (tidak ada --extractor-args sama sekali).
+# Bukti 2026-11-10 dari PC user (video Velvet Room 0tJB8EGKsgk):
+# `yt-dlp -F` tanpa extractor args nunjukin daftar lengkap sampai
+# 1080p (137/270/614/248/399); sementara `android,web` (v1.2-v1.4)
+# cuma ngasih format 18 (360p) — client android kena batasan SABR.
+# Default yt-dlp: visionos saja (tanpa JS runtime) atau
+# tv_samsung+visionos+web (dengan JS runtime). Di IP yang kena
+# bot-check total, default bisa gagal — saat itu baru cookies (v1.4,
+# opt-in) atau jaringan lain yang jadi jalan keluar.
 
 # Cookies (v1.4): opt-in, dibaca LOKAL oleh yt-dlp dari browser user
 # (--cookies-from-browser). Dengan sesi login, YouTube ngasih format
@@ -458,13 +467,13 @@ def build_ytdlp_command(yt_dlp: str, url: str,
     `output_template` must contain %(ext)s (e.g. ".../Judul.%(ext)s").
     --no-playlist: a playlist URL with v= downloads just that video.
     --newline: one progress line per update, parseable by
-    parse_ytdlp_progress. The extractor args put the android client
-    first (bot-check resistant) with web as fallback. `cookies_browser`
+    parse_ytdlp_progress. TIDAK ada --extractor-args (v1.5): pakai
+    default yt-dlp, sama kayak ytDownloader — client android yang
+    dulu dipaksa justru kena SABR dan mentok 360p. `cookies_browser`
     (v1.4, opt-in) adds --cookies-from-browser so yt-dlp runs with the
     user's login session — full 1080p formats + bot-check resistant.
     """
     return [yt_dlp, "--no-playlist",
-            "--extractor-args", YTDLP_EXTRACTOR_ARGS,
             *cookies_args(cookies_browser),
             "-f", YTDLP_FORMAT,
             "--merge-output-format", "mp4",
@@ -539,15 +548,24 @@ def _heights_from_formats(formats) -> Tuple[Optional[int], Optional[int]]:
     return max(heights), (max(under) if under else max(heights))
 
 
+def _stderr_tail(text: str, lines: int = 3, limit: int = 500) -> str:
+    """Baris-baris terakhir stderr yt-dlp yang tidak kosong, buat
+    pesan error yang bisa dibaca user (v1.5: jangan telan error)."""
+    kept = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    return "\n".join(kept[-lines:])[:limit]
+
+
 def get_youtube_info(yt_dlp: str, url: str,
                      timeout: int = 60,
-                     cookies_browser: Optional[str] = None) -> Optional[dict]:
+                     cookies_browser: Optional[str] = None) -> dict:
     """Fetch a video's title + duration + max quality via yt-dlp (no download).
 
     Returns {"title": str, "duration": float|None,
              "max_height": int|None, "download_height": int|None}
-    or None on failure (private / age-restricted / login-required /
-    network error). Never raises.
+    on success, or {"error": str} on failure (private /
+    age-restricted / login-required / network error — str-nya adalah
+    ekor stderr yt-dlp yang asli, v1.5, supaya user tidak cuma dapat
+    pesan generik). Never raises, never returns None.
 
     max_height = kualitas tertinggi yang dimiliki video itu (dari
     daftar format yt-dlp); download_height = yang bakal di-download
@@ -560,15 +578,16 @@ def get_youtube_info(yt_dlp: str, url: str,
     durasi tetap dapat, tinggi jadi None).
     """
     cmd = [yt_dlp, "--no-playlist",
-           "--extractor-args", YTDLP_EXTRACTOR_ARGS,
            *cookies_args(cookies_browser),
            "-J", "--no-download", url]
+    err_j = ""
     try:
         r = subprocess.run(cmd, capture_output=True, text=True,
                            encoding="utf-8", errors="replace",
                            timeout=timeout, **_no_window_kwargs())
-    except Exception:
+    except Exception as e:
         r = None
+        err_j = f"yt-dlp gagal jalan: {e}"
     if r is not None and r.returncode == 0 and (r.stdout or "").strip():
         try:
             data = json.loads(r.stdout)
@@ -583,22 +602,24 @@ def get_youtube_info(yt_dlp: str, url: str,
                 dur = None
             return {"title": str(data["title"]), "duration": dur,
                     "max_height": max_h, "download_height": dl_h}
+    if r is not None:
+        err_j = _stderr_tail(r.stderr) or _stderr_tail(r.stdout)
     # Fallback lama: judul + durasi saja, tanpa info kualitas.
     cmd = [yt_dlp, "--no-playlist",
-           "--extractor-args", YTDLP_EXTRACTOR_ARGS,
            *cookies_args(cookies_browser),
            "--get-title", "--get-duration", "--no-download", url]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True,
                            encoding="utf-8", errors="replace",
                            timeout=timeout, **_no_window_kwargs())
-    except Exception:
-        return None
+    except Exception as e:
+        return {"error": err_j or f"yt-dlp gagal jalan: {e}"}
     if r.returncode != 0:
-        return None
+        return {"error": _stderr_tail(r.stderr) or err_j
+                or "yt-dlp gagal membaca info video."}
     lines = [ln.strip() for ln in (r.stdout or "").splitlines() if ln.strip()]
     if not lines:
-        return None
+        return {"error": err_j or "yt-dlp tidak mengembalikan info video."}
     title = lines[0]
     duration = _parse_duration_text(lines[1]) if len(lines) > 1 else None
     return {"title": title, "duration": duration,

@@ -58,9 +58,11 @@ source), atau **`build_exe.bat`** (build `.exe` saja, tanpa setup Python/ffmpeg)
      **Cek Info** buat lihat judul + durasi + **kualitas max video**
      dulu (v1.3: mis. "kualitas max 240p — download jadi 240p", jadi
      ketahuan sebelum download kalau videonya memang mentok rendah),
-     atau langsung **⬇ Download**. Kualitas download: **1080p terbaik** — format
-     terbaik dengan tinggi ≤ 1080 (kalau sumbernya 4K, diambil 1080-nya;
-     kalau sumber max 720p, diambil 720p), hasil akhir **wajib .mp4**.
+     atau langsung **⬇ Download**. Kualitas download: **1080p terbaik
+     (HD biasa, bukan "1080p Premium")** — format terbaik dengan tinggi
+     ≤ 1080 (kalau sumbernya 4K, diambil 1080-nya; kalau sumber max
+     720p, diambil 720p), hasil akhir **wajib .mp4**. v1.5 memakai
+     **default yt-dlp** (tanpa memaksa client) — sama kayak ytDownloader.
      File hasil download tersimpan di `folder output/downloads/` dengan
      nama = judul video, lalu otomatis jadi sumber potongan. Kalau klik
      **✂ POTONG** saat URL sudah ditempel tapi belum di-download,
@@ -198,18 +200,19 @@ tiap klip 3-8 detik, efek beda-beda, nama file acak kayak `a7k9x2q4m1.mp4`.
     Domain lain, URL kosong, dan `/playlist` ditolak dengan pesan jelas.
     URL playlist yang ada `v=`-nya tetap jalan — yt-dlp `--no-playlist`
     hanya download video itu saja.
-  - Format string: `bv*[height<=1080][ext=mp4]+ba[ext=m4a]/bv*[height<=1080]+ba/b[height<=1080][ext=mp4]/b[height<=1080]`
+  - Format string: `bv*[height<=1080][ext=mp4][format_note!*=?Premium]+ba[ext=m4a]/bv*[height<=1080][format_note!*=?Premium]+ba/b[height<=1080][ext=mp4][format_note!*=?Premium]/b[height<=1080][format_note!*=?Premium]`
     + `--merge-output-format mp4`. Artinya: video terbaik ≤1080p dulu
-    (utamakan mp4), audio terbaik, lalu di-merge ke `.mp4`.
-  - Player client: `--extractor-args "youtube:player_client=android,web"` —
-    android dulu, web sebagai fallback. Alasannya terverifikasi 2026-11-09:
-    dari VM ini (IP proxy bersama) client web kena HTTP 429 / bot-check di
-    semua request, sementara android berhasil baca info + download. Catatan
-    jujur: di IP yang kena bot-check, client android bisa kena batasan SABR
-    dan hanya menawarkan tinggi yang lebih rendah (contoh: video lama yang
-    diuji cuma dapat 360p) — cap ≤1080 tetap berlaku, itu yang terbaik
-    yang *tersedia* di jaringan itu. Di PC rumahan biasa, client web
-    seharusnya menyediakan 1080p.
+    (utamakan mp4), audio terbaik, lalu di-merge ke `.mp4`. Filter
+    `format_note!*=?Premium` (v1.5) mengecualikan format "1080p Premium"
+    (itag 616/235) — tanpa langganan Premium format itu gagal
+    di-download, dan yt-dlp malah mengutamakannya (source_preference
+    +100) kalau tidak difilter; target app adalah 1080p HD biasa.
+  - Player client (v1.5): **tidak ada `--extractor-args`** — pakai default
+    yt-dlp, sama kayak ytDownloader. Dulu (v1.2–v1.4) dipaksa
+    `android,web`, dan client android ternyata kena batasan SABR:
+    terbukti 2026-11-10 dari PC user, `yt-dlp -F` tanpa extractor args
+    nunjukin daftar lengkap sampai 1080p (137/270/614/248/399),
+    sementara `android,web` cuma ngasih format 18 (360p).
   - **Cookies (v1.4, opt-in):** `cookies_args` + `--cookies-from-browser
     <browser>` (chrome / edge / firefox / brave / opera / vivaldi) ke Cek
     Info dan download — dengan sesi login, YouTube ngasih format lengkap
@@ -309,6 +312,35 @@ download palsu .mkv → hasil akhir `.mp4` (file `.mkv` dihapus) + fallback
 remux-gagal. Total di VM ini: **449 passed, 0 failed** (tes integrasi
 YouTube beneran skip karena yt-dlp tidak ada di VM ini).
 
+**v1.5: default yt-dlp + kecualikan Premium + error asli** — `--extractor-args`
+dihapus dari semua command yt-dlp (Cek Info + download); format string
+dapat filter `[format_note!*=?Premium]` di tiap pilihan video;
+`get_youtube_info` gagal mengembalikan `{"error": ...}` berisi ekor stderr
+yt-dlp yang asli (bukan None), dan GUI menampilkannya di dialog Cek Info /
+download. Tes: 5 cek baru — command tanpa `--extractor-args` / android,
+format mengandung filter Premium, selector yt-dlp offline (string lama
+pilih `616+140`, string baru pilih `137+140`, cuma-18 tetap `18`), info
+palsu gagal → dict error. Total di VM ini: **454 passed, 0 failed** (tes
+integrasi YouTube beneran skip karena yt-dlp tidak ada di VM ini).
+
+## Catatan v1.5
+
+- **Bukti dari PC user (2026-11-10 malam):** screenshot `yt-dlp -F` untuk
+  video Velvet Room nunjukin daftar lengkap sampai 1080p (137 mp4 1080p,
+  270, 614 vp9, 248 webm, 399 av01, plus 616 "1080p Premium") — tanpa
+  extractor args. Sementara `android,web` (v1.2–v1.4) di video yang sama
+  cuma ngasih format 18 (360p). Jadi yang bikin mentok 360p adalah
+  pemaksaan client android (SABR), bukan format selector-nya.
+- **Kenapa Premium dikecualikan:** itag 616/235 dapat `source_preference
+  +100` dari yt-dlp, jadi tanpa filter, selector lama memilih `616+140`
+  — dan format itu butuh langganan Premium, gagal di-download kalau tidak
+  Premium. Terverifikasi offline (selector yt-dlp 2026.10.26):
+  string lama → `616+140`, string v1.5 → `137+140`.
+- **Cookies (v1.4) tetap ada sebagai opsi** (opt-in, default mati) buat
+  jaringan yang kena bot-check total — tapi bukan lagi jalan utama.
+  Kalau Cek Info gagal, dialog sekarang nunjukin error asli yt-dlp
+  (mis. "Sign in to confirm you're not a bot" / 429), bukan pesan generik.
+
 ## Catatan v1.4
 
 - **Kenapa 360p, kenapa cookies:** YouTube ke IP yang ke-blok cuma ngasih
@@ -340,12 +372,14 @@ YouTube beneran skip karena yt-dlp tidak ada di VM ini).
   butuh cookies dari browser (v1.4); tanpa cookies akan gagal dengan pesan
   error yt-dlp apa adanya di log.
 - **Catatan jaringan (jujur):** dari VM ini (IP proxy bersama), client web
-  YouTube kena HTTP 429 / bot-check, jadi download memakai client android
-  sebagai fallback — dan client android bisa kena batasan SABR yang
+  YouTube kena HTTP 429 / bot-check dan default yt-dlp (visionos) juga
+  kena bot-check, jadi download memakai client android sebagai fallback
+  di v1.2–v1.4 — dan client android bisa kena batasan SABR yang
   membatasi tinggi yang tersedia (video tes lama cuma dapat 360p). Di PC
-  rumahan biasa, client web seharusnya menyediakan 1080p. Format string-nya
-  sendiri sudah benar: ia selalu memilih yang terbaik ≤1080p dari format
-  yang tersedia.
+  rumahan biasa, default yt-dlp menyediakan 1080p (terbukti 2026-11-10:
+  daftar format lengkap sampai 1080p) — karena itu v1.5 memakai default
+  dan tidak lagi memaksa android. Format string-nya sendiri sudah benar:
+  ia selalu memilih yang terbaik ≤1080p dari format yang tersedia.
 - **ToS:** download hanya untuk video milik sendiri / yang kamu punya hak
   pakainya. Download dari YouTube dapat melanggar Ketentuan Layanan YouTube.
 - Pengingat jujur (tetap berlaku): efek tambahan bikin klip makin beda dari

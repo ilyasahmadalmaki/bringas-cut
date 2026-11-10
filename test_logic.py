@@ -302,8 +302,12 @@ def test_build_ytdlp_command():
           "[ext=mp4]" in fmt, fmt)
     check("ytdlp cmd: -o template dipakai",
           cmd[cmd.index("-o") + 1] == "/tmp/dl/Judul.%(ext)s", str(cmd))
-    check("ytdlp cmd: extractor-args android dulu, web fallback",
-          "android,web" in cmd[cmd.index("--extractor-args") + 1], str(cmd))
+    check("ytdlp cmd: TIDAK ada --extractor-args (v1.5: default yt-dlp)",
+          "--extractor-args" not in cmd, str(cmd))
+    check("ytdlp cmd: TIDAK ada client android (yang mentok 360p)",
+          not any("android" in a for a in cmd), str(cmd))
+    check("ytdlp cmd: format kecualikan Premium (bukan 1080p Premium)",
+          "format_note!*=?Premium" in fmt, fmt)
     check("ytdlp cmd: tanpa cookies -> tidak ada flag --cookies",
           not any(a.startswith("--cookies") for a in cmd), str(cmd))
 
@@ -343,6 +347,53 @@ def test_build_ytdlp_command_cookies():
           "--cookies-from-browser" not in fu.build_ytdlp_command(
               "/usr/bin/yt-dlp", "https://youtu.be/jNQXAC9IVRw",
               "/tmp/dl/Judul.%(ext)s", cookies_browser="safari"))
+
+
+def test_format_selector_excludes_premium():
+    """Selector v1.5 (offline, pakai yt-dlp beneran kalau ada):
+    616 (1080p Premium) dikecualikan, 137+140 yang dipilih.
+    Skip kalau modul yt_dlp tidak ter-install (mis. PC user yang
+    cuma punya yt-dlp.exe) — bukan gagal."""
+    try:
+        from yt_dlp import YoutubeDL
+    except ImportError:
+        print("SKIP  format selector Premium: modul yt_dlp tidak ada")
+        return
+    ydl = YoutubeDL({'quiet': True, 'no_warnings': True})
+    # Urutan ascending (worst->best) seperti hasil _sort_formats yt-dlp.
+    asc = [
+        {'format_id': '18', 'ext': 'mp4', 'height': 360, 'width': 640,
+         'vcodec': 'avc1.42001E', 'acodec': 'mp4a.40.2',
+         'format_note': '360p', 'tbr': 421, 'url': 'https://x/18'},
+        {'format_id': '140', 'ext': 'm4a', 'height': None, 'width': None,
+         'vcodec': 'none', 'acodec': 'mp4a.40.2',
+         'format_note': 'medium', 'tbr': 129, 'url': 'https://x/140'},
+        {'format_id': '137', 'ext': 'mp4', 'height': 1080, 'width': 1920,
+         'vcodec': 'avc1.640028', 'acodec': 'none',
+         'format_note': '1080p', 'tbr': 1230, 'url': 'https://x/137'},
+        {'format_id': '616', 'ext': 'mp4', 'height': 1080, 'width': 1920,
+         'vcodec': 'vp09.00.40.08', 'acodec': 'none',
+         'format_note': '1080p Premium', 'tbr': 3048, 'url': 'https://x/616'},
+    ]
+    sel = ydl.build_format_selector(fu.YTDLP_FORMAT)
+    out = ydl._select_formats(asc, sel)
+    check("selector: 616 Premium dikecualikan -> pilih 137+140",
+          [f.get('format_id') for f in out] == ['137+140'],
+          str([f.get('format_id') for f in out]))
+    # Bukti premis: string lama (tanpa filter) memilih 616+140.
+    old = ("bv*[height<=1080][ext=mp4]+ba[ext=m4a]/"
+           "bv*[height<=1080]+ba/"
+           "b[height<=1080][ext=mp4]/b[height<=1080]")
+    out_old = ydl._select_formats(asc, ydl.build_format_selector(old))
+    check("selector: string lama memilih 616+140 (yang dihindari v1.5)",
+          [f.get('format_id') for f in out_old] == ['616+140'],
+          str([f.get('format_id') for f in out_old]))
+    # Cuma format 18 (SABR): tetap 18, bukan gagal.
+    only18 = [f for f in asc if f['format_id'] == '18']
+    out18 = ydl._select_formats(only18, sel)
+    check("selector: cuma 18 -> tetap 18",
+          [f.get('format_id') for f in out18] == ['18'],
+          str([f.get('format_id') for f in out18]))
 
 
 def test_parse_ytdlp_progress():
@@ -500,11 +551,14 @@ def test_get_youtube_info_fake(tmp):
     check("yt info palsu: judul + durasi + kualitas max terbaca",
           info == {"title": "Video Tes Palsu", "duration": 10.0,
                    "max_height": 240, "download_height": 240}, str(info))
-    # Mode gagal -> None (bukan exception)
+    # Mode gagal -> dict {"error": ...} (bukan None, bukan exception),
+    # isinya ekor stderr yt-dlp yang asli.
     os.environ["FAKE_YT_FAIL"] = "1"
     try:
-        check("yt info palsu: gagal -> None",
-              fu.get_youtube_info(fake, "https://youtu.be/FAKE1234567") is None)
+        err = fu.get_youtube_info(fake, "https://youtu.be/FAKE1234567")
+        check("yt info palsu: gagal -> dict error berisi pesan yt-dlp",
+              isinstance(err, dict) and "private" in (err.get("error") or ""),
+              str(err))
     finally:
         del os.environ["FAKE_YT_FAIL"]
 
@@ -1014,9 +1068,9 @@ def test_integration_real_youtube(tmp):
     print("integration YouTube: cek info 'Me at the zoo' via yt-dlp beneran…")
     info = fu.get_youtube_info(ytdlp, "https://www.youtube.com/watch?v=jNQXAC9IVRw",
                                timeout=90)
-    if info is None:
+    if info.get("error"):
         print("SKIP  integration YouTube: get info gagal "
-              "(YouTube memblokir IP VM / network tidak mengizinkan)")
+              f"(YouTube memblokir IP VM / network tidak mengizinkan): {info['error']}")
         return
     check("integration YouTube: judul 'Me at the zoo'",
           info["title"] == "Me at the zoo", str(info))
@@ -1134,6 +1188,7 @@ def main():
         test_build_ytdlp_command()
         test_cookies_args()
         test_build_ytdlp_command_cookies()
+        test_format_selector_excludes_premium()
         test_parse_ytdlp_progress()
         test_find_yt_dlp(tmp)
         test_sanitize_and_numbered_path(tmp)

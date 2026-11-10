@@ -11,6 +11,9 @@ v1.3: Cek Info nunjukin kualitas max video sebelum download, plus
 logo resmi (icon jendela + icon .exe + README).
 v1.4: opsi cookies dari browser (opt-in, biar 1080p kebuka kalau
 YouTube nge-blok) + hasil download selalu .mp4 (remux kalau perlu).
+v1.5: pakai default yt-dlp (tanpa paksa client android — yang bikin
+mentok 360p) + format kecualikan "1080p Premium" (biar dapat 1080p
+HD biasa) + Cek Info nunjukin error asli yt-dlp kalau gagal.
 
 Jalankan:  python bringas_cut.py
            (atau double-click run.bat di Windows)
@@ -403,11 +406,9 @@ class App(tk.Tk):
         if cookies:
             log(f"  cookies: dari browser {cookies} (opt-in)")
         info = fu.get_youtube_info(ytdlp, url, cookies_browser=cookies)
-        if info is None:
-            raise RuntimeError("yt-dlp gagal membaca info video — mungkin video "
-                               "private / age-restricted / butuh login, atau "
-                               "YouTube memblokir permintaan dari IP ini "
-                               "(coba lagi nanti / dari jaringan lain).")
+        if info.get("error"):
+            raise RuntimeError("yt-dlp gagal membaca info video:\n"
+                               + info["error"])
         title = info["title"]
         dur = info["duration"]
         dur_txt = f"{dur:.0f}s" if dur else "durasi tidak diketahui"
@@ -468,10 +469,9 @@ class App(tk.Tk):
             if cookies:
                 self._log(f"  cookies: dari browser {cookies} (opt-in)")
             info = fu.get_youtube_info(ytdlp, url, cookies_browser=cookies)
-            if info is None:
-                raise RuntimeError("yt-dlp gagal membaca info video — mungkin "
-                                   "video private / age-restricted / butuh "
-                                   "login, atau YouTube memblokir IP ini.")
+            if info.get("error"):
+                raise RuntimeError("yt-dlp gagal membaca info video:\n"
+                                   + info["error"])
             dur = info["duration"]
             dur_txt = f"{dur:.0f}s" if dur else "durasi tidak diketahui"
             max_h = info.get("max_height")
